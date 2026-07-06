@@ -203,3 +203,22 @@
 
 ### Suggested Next Steps
 - Add a small scripted Chrome viewport audit that fails if any important panel extends beyond the viewport.
+
+## [2026-07-06] — Builder single-column production fix
+
+### What Was Implemented
+- Forced the builder route into a single adaptive column instead of allowing the secondary Limits panel to sit beside the editor.
+- Capped the builder working width to a readable editor surface that stays inside desktop app portrait and landscape shells.
+
+### Files Modified
+- `public/styles.css` — builder-specific grid override and max working width.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- The builder should prioritize fitting and editor readability over side-by-side secondary panels.
+
+### Known Issues / Deferred
+- Host/player screens still use adaptive multi-column layout where space permits.
+
+### Suggested Next Steps
+- Add automated production viewport checks before deploy.

@@ -247,6 +247,12 @@ label {
   align-items: start;
 }
 
+.builder-layout {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: min(100%, 1120px);
+  margin-inline: auto;
+}
+
 .host-layout,
 .player-layout {
   --layout-column-min: min(100%, 30rem);
