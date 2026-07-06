@@ -160,3 +160,24 @@
 
 ### Suggested Next Steps
 - Add scripted viewport visual checks outside the plugin for 1080x1800 and 2048x1152.
+
+## [2026-07-06] — Builder form row clipping fix
+
+### What Was Implemented
+- Fixed the question editor row that still clipped in the desktop app shell by stacking `Type`, `Text`, `Points`, and `Remove` below 1500px instead of waiting until mobile width.
+- Added shrink guards for form labels, question-head children, and option-row children.
+- Removed global horizontal clipping so layout bugs are not silently hidden.
+- Added safer max-width behavior for builder inputs, selects, and textareas.
+
+### Files Modified
+- `public/styles.css` — desktop-app-width builder form layout and clipping fixes.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- At desktop-app landscape widths, a stacked editor row is preferable to a compact horizontal row that risks clipping.
+
+### Known Issues / Deferred
+- A formal viewport regression suite is still not in place.
+
+### Suggested Next Steps
+- Add automated checks for the exact desktop app viewport sizes shown in screenshots.
