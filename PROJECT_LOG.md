@@ -120,3 +120,24 @@
 ### Suggested Next Steps
 - Normalize live sessions, players, answers, and reports into relational tables.
 - Add a pub/sub layer for cross-instance live updates.
+
+## [2026-07-06] — Portrait desktop builder layout fix
+
+### What Was Implemented
+- Made the build-deck screen single-column at all widths so the secondary Limits panel cannot be clipped in portrait desktop windows.
+- Kept side rails available only for host/player views on very wide screens.
+- Added a max-width fallback and horizontal overflow guard for the page shell.
+
+### Files Modified
+- `public/app.js` — adds specific layout classes for builder, host, and player screens.
+- `public/styles.css` — defaults layouts to single-column, only enabling side rails for host/player at very wide widths.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- Builder usability and fitting the desktop portrait shell is more important than keeping the Limits panel beside the editor.
+
+### Known Issues / Deferred
+- No automated visual regression suite yet for the desktop portrait shell size.
+
+### Suggested Next Steps
+- Add Chrome viewport checks for desktop portrait, desktop landscape, and mobile.

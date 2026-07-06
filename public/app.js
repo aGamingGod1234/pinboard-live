@@ -205,7 +205,7 @@ function renderPresenter() {
   }
 
   return `
-    <section class="layout">
+    <section class="layout builder-layout">
       <form class="stack" data-action="create-session">
         <div class="panel">
           <div class="panel-header">
@@ -279,7 +279,7 @@ function renderHostConsole() {
   const joinLink = getJoinLink(remote.pin);
 
   return `
-    <section class="layout">
+    <section class="layout host-layout">
       <div class="stack">
         <div class="panel">
           <div class="panel-header">
@@ -360,7 +360,7 @@ function renderPlayer() {
 
   const remote = state.remote;
   return `
-    <section class="layout">
+    <section class="layout player-layout">
       <div class="stack">
         <div class="panel">
           <div class="panel-header">

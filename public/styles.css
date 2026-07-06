@@ -22,6 +22,7 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-x: hidden;
 }
 
 button,
@@ -152,6 +153,7 @@ label {
 
 .view {
   width: min(1180px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
   margin: 0 auto;
   padding: 28px 0 48px;
 }
@@ -231,9 +233,16 @@ label {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
+}
+
+@media (min-width: 1500px) {
+  .host-layout,
+  .player-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  }
 }
 
 .layout > *,
@@ -451,7 +460,6 @@ label {
 }
 
 @media (max-width: 1400px) {
-  .layout,
   .status-grid {
     grid-template-columns: 1fr;
   }
