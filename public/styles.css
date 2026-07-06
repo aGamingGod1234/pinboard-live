@@ -1201,6 +1201,44 @@ label {
   }
 }
 
+@media (min-width: 901px) and (max-height: 1050px) {
+  .lobby-pin-card {
+    margin-top: 18px;
+  }
+
+  .join-instructions,
+  .game-pin-block {
+    padding: 18px 28px;
+  }
+
+  .join-instructions {
+    font-size: clamp(1.25rem, 2vw, 1.85rem);
+  }
+
+  .game-pin-block strong {
+    font-size: clamp(3rem, 7vw, 5.7rem);
+  }
+
+  .qr-grid {
+    width: 72px;
+    height: 72px;
+  }
+
+  .host-start-cluster {
+    top: clamp(132px, 24vh, 238px);
+  }
+
+  .lobby-center {
+    min-height: min(40dvh, 360px);
+    gap: clamp(24px, 5vh, 52px);
+    padding: 12px 0;
+  }
+
+  .waiting-pill {
+    font-size: clamp(1.9rem, 4vw, 3.35rem);
+  }
+}
+
 @media (max-width: 900px) {
   .topbar,
   .creator-topline,

@@ -140,6 +140,10 @@ function render() {
       ${state.mode === "home" ? renderHome() : ""}
     </main>
   `;
+
+  if (isImmersive) {
+    requestAnimationFrame(() => window.scrollTo(0, 0));
+  }
 }
 
 function shouldUseImmersiveShell() {
