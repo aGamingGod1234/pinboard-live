@@ -1,3 +1,32 @@
+## [2026-07-06] - Kahoot-inspired shader UI rebuild
+
+### What Was Implemented
+- Rebuilt the player join screen as a full-screen purple shader-gradient experience with compact PIN/nickname entry.
+- Rebuilt the live host lobby as a blue shader-gradient stage with a large game PIN banner, join path, copy-link tile, start controls, and participant dock.
+- Reworked presenter question/result and player answer screens into large colored answer tiles with shape markers, counts, correct-state badges, and scoreboard panels.
+- Reworked the creator into an adaptive workspace with question strip, main editor, launch area, and limits inspector.
+- Added responsive rules for desktop portrait, desktop landscape, and mobile so immersive views do not horizontally clip.
+
+### Files Modified
+- `public/app.js` - new join, creator, lobby, presenter-stage, player-stage, and answer tile renderers.
+- `public/styles.css` - shader-gradient backgrounds, Kahoot-style stage layout, answer tile system, and responsive fixes.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- "Use shadergradients" can be satisfied with CSS shader-style animated gradients because the app is vanilla JavaScript and adding the React/WebGL package would be disproportionate.
+- The UI should be Kahoot-inspired but keep original Pinboard branding and original assets to avoid shipping copied Kahoot marks or artwork.
+- The QR-looking tile should act as a copy-link control instead of pretending to be a scannable QR code.
+
+### Known Issues / Deferred
+- The copy-link tile is decorative, not a generated QR code.
+- The creator is simplified and does not yet include Kahoot's full media/effects/sidebar feature depth.
+- Local verification used Chrome for E2E and installed Chrome via Playwright for fixed viewport measurements because the Chrome plugin wrapper does not expose viewport resize.
+
+### Suggested Next Steps
+- Add a real QR code generator for the lobby join link.
+- Add question timers and full-screen presenter controls.
+- Add more question types and per-question settings.
+
 ## [2026-07-06] — Minimal Kahoot-style live quiz app
 
 ### What Was Implemented

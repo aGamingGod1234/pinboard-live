@@ -1,7 +1,8 @@
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 const DEFAULT_POINTS = 1000;
 const DEFAULT_OPTIONS = ["Red", "Blue", "Gold", "Green"];
-const OPTION_TONES = ["0", "1", "2", "3", "4", "5"];
+const OPTION_TONES = ["red", "blue", "gold", "green", "purple", "teal"];
+const OPTION_SHAPES = ["triangle", "diamond", "circle", "square", "star", "hexagon"];
 const LIVE_RECONNECT_NOTICE = "Live connection is retrying.";
 const STORAGE_KEYS = {
   hostToken: "pinboard.hostToken",
@@ -128,15 +129,24 @@ document.addEventListener("change", async (event) => {
 });
 
 function render() {
+  const isImmersive = shouldUseImmersiveShell();
+  app.className = `app-shell ${isImmersive ? "app-shell-immersive" : ""}`;
   app.innerHTML = `
-    ${renderTopbar()}
-    <main class="view">
+    ${isImmersive ? "" : renderTopbar()}
+    <main class="${isImmersive ? "stage-view" : "view"}">
       ${renderMessages()}
       ${state.mode === "presenter" ? renderPresenter() : ""}
       ${state.mode === "player" ? renderPlayer() : ""}
       ${state.mode === "home" ? renderHome() : ""}
     </main>
   `;
+}
+
+function shouldUseImmersiveShell() {
+  if (state.mode === "home" || state.mode === "player") {
+    return true;
+  }
+  return Boolean(state.session);
 }
 
 function renderTopbar() {
@@ -163,67 +173,107 @@ function renderMessages() {
 }
 
 function renderHome() {
-  return `
-    <section class="hero-grid">
-      <div class="hero-panel">
-        <div>
-          <h1 class="hero-title">Live quizzes without the maze.</h1>
-          <p class="hero-copy">Create a tiny deck, share a PIN, collect answers, reveal the board, move on.</p>
-          <div class="mode-grid">
-            <div class="mode-tile"><strong>Slides</strong><span>Content-only moments between questions.</span></div>
-            <div class="mode-tile"><strong>Quiz</strong><span>Correct answer plus configurable points.</span></div>
-            <div class="mode-tile"><strong>Poll</strong><span>Free selections without scoring.</span></div>
-          </div>
-        </div>
-      </div>
-      <form class="join-panel panel" data-action="join">
-        <h2 class="panel-title">Join a session</h2>
-        <label>PIN <input name="pin" inputmode="numeric" maxlength="6" value="${escapeHtml(state.playerPin)}" data-field="playerPin" /></label>
-        <label>Name <input name="nickname" maxlength="32" value="${escapeHtml(state.nickname)}" data-field="nickname" /></label>
-        <button type="submit">Join</button>
-      </form>
-    </section>
-  `;
+  return renderJoinScreen(true);
 }
 
 function renderPresenter() {
   if (!state.hostToken) {
-    return `
-      <section class="panel">
-        <form class="stack" data-action="auth">
-          <h1 class="panel-title">Presenter access</h1>
-          <label>Email <input type="email" autocomplete="username" data-field="presenterEmail" value="${escapeHtml(state.presenterEmail)}" /></label>
-          <label>Password <input type="password" autocomplete="current-password" data-field="presenterPassword" value="${escapeHtml(state.presenterPassword)}" /></label>
-          <button type="submit">Unlock</button>
-        </form>
-      </section>
-    `;
+    return renderPresenterLogin();
   }
 
   if (state.session) {
     return renderHostConsole();
   }
 
+  return renderCreator();
+}
+
+function renderJoinScreen(showPresenterLink = false) {
   return `
-    <section class="layout builder-layout">
-      <form class="stack" data-action="create-session">
-        <div class="panel">
+    <section class="shader-screen shader-purple join-screen" data-motion-trigger="ambient-drift">
+      <div class="screen-action-row">
+        <span class="locale-pill">EN-GB</span>
+        ${showPresenterLink ? `<button class="glass-pill" type="button" data-action="go-presenter">Presenter</button>` : ""}
+      </div>
+      <div class="join-center">
+        <div class="play-wordmark" aria-label="Pinboard Live">Pinboard<span>!</span></div>
+        <form class="join-card" data-action="join">
+          <input class="pin-input" name="pin" inputmode="numeric" maxlength="6" placeholder="Game PIN" value="${escapeHtml(state.playerPin)}" data-field="playerPin" aria-label="Game PIN" />
+          <input class="nickname-input" name="nickname" maxlength="32" placeholder="Nickname" value="${escapeHtml(state.nickname)}" data-field="nickname" aria-label="Nickname" />
+          <button class="join-submit" type="submit">Enter</button>
+        </form>
+      </div>
+      <footer class="join-footer">
+        <strong>Create and host for free at Pinboard Live</strong>
+        <span>Terms | Privacy | Cookie notice</span>
+      </footer>
+    </section>
+  `;
+}
+
+function renderPresenterLogin() {
+  return `
+    <section class="presenter-login-shell">
+      <form class="panel presenter-login-card stack" data-action="auth">
+        <div>
+          <p class="eyebrow">Presenter</p>
+          <h1 class="panel-title">Unlock your live decks</h1>
+        </div>
+        <label>Email <input type="email" autocomplete="username" data-field="presenterEmail" value="${escapeHtml(state.presenterEmail)}" /></label>
+        <label>Password <input type="password" autocomplete="current-password" data-field="presenterPassword" value="${escapeHtml(state.presenterPassword)}" /></label>
+        <button type="submit">Unlock</button>
+      </form>
+    </section>
+  `;
+}
+
+function renderCreator() {
+  return `
+    <section class="creator-page">
+      <div class="creator-topline">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+          <span>Pinboard Live</span>
+        </div>
+        <div class="nav-actions">
+          <button class="ghost" type="button" data-action="go-player">Join</button>
+          <button type="button" data-action="go-home">Preview join</button>
+        </div>
+      </div>
+      <form class="creator-shell" data-action="create-session">
+        <aside class="creator-rail panel">
           <div class="panel-header">
-            <h1 class="panel-title">Build deck</h1>
+            <h1 class="panel-title">Create</h1>
             <button type="button" class="secondary" data-action="add-question">Add item</button>
           </div>
-          <label>Deck title <input data-field="deckTitle" maxlength="120" value="${escapeHtml(state.draft.title)}" /></label>
+          <div class="question-strip">
+            ${state.draft.questions.map((question, index) => `
+              <article class="question-mini">
+                <span>${index + 1}</span>
+                <strong>${escapeHtml(question.text || "Untitled item")}</strong>
+                <small>${escapeHtml(getQuestionTypeLabel(question.kind))}</small>
+              </article>
+            `).join("")}
+          </div>
+        </aside>
+        <div class="creator-main stack">
+          <div class="panel deck-panel">
+            <label>Deck title <input data-field="deckTitle" maxlength="120" value="${escapeHtml(state.draft.title)}" /></label>
+          </div>
+          ${state.draft.questions.map(renderQuestionEditor).join("")}
+          <div class="panel creator-launch">
+            <button type="submit">Host live</button>
+          </div>
         </div>
-        ${state.draft.questions.map(renderQuestionEditor).join("")}
-        <div class="panel">
-          <button type="submit">Host live</button>
-        </div>
+        <aside class="creator-inspector panel stack">
+          <div>
+            <p class="eyebrow">Limits</p>
+            <h2 class="panel-title">Ready for live play</h2>
+          </div>
+          <p class="muted">Media is checked at 100 MB per item. Player joins have no app-level cap in this prototype.</p>
+          <button type="button" class="secondary" data-action="reset-deck">Reset draft</button>
+        </aside>
       </form>
-      <aside class="panel stack">
-        <h2 class="panel-title">Limits</h2>
-        <p class="muted">Media is checked at 100 MB per item. Player joins have no app-level cap in this prototype.</p>
-        <button type="button" class="secondary" data-action="reset-deck">Reset draft</button>
-      </aside>
     </section>
   `;
 }
@@ -233,7 +283,7 @@ function renderQuestionEditor(question, index) {
   const isPoll = question.kind === "poll";
 
   return `
-    <article class="question-card">
+    <article class="question-card creator-question">
       <div class="question-head">
         <label class="question-field question-field-type">Type
           <select data-field="questionKind" data-question-id="${question.id}">
@@ -248,12 +298,12 @@ function renderQuestionEditor(question, index) {
         <label class="question-field question-field-points">Points
           <input type="number" min="0" max="1000000" step="100" ${isSlide || isPoll ? "disabled" : ""} data-field="points" data-question-id="${question.id}" value="${question.points}" />
         </label>
-        <button type="button" class="ghost" data-action="remove-question" data-question-id="${question.id}" ${state.draft.questions.length === 1 ? "disabled" : ""}>Remove</button>
+        <button type="button" class="ghost remove-question" data-action="remove-question" data-question-id="${question.id}" ${state.draft.questions.length === 1 ? "disabled" : ""}>Remove</button>
       </div>
       <label>Media
         <input type="file" accept="image/*,video/*" data-field="media" data-question-id="${question.id}" />
       </label>
-      ${question.media ? `<p class="muted">${escapeHtml(question.media.name)} · ${formatBytes(question.media.size)}</p>` : ""}
+      ${question.media ? `<p class="muted">${escapeHtml(question.media.name)} - ${formatBytes(question.media.size)}</p>` : ""}
       ${isSlide ? "" : renderOptionEditor(question, isPoll)}
       <p class="muted">Item ${index + 1} of ${state.draft.questions.length}</p>
     </article>
@@ -263,9 +313,10 @@ function renderQuestionEditor(question, index) {
 function renderOptionEditor(question, isPoll) {
   return `
     <div class="option-list">
-      ${question.options.map((option) => `
-        <div class="option-row">
+      ${question.options.map((option, index) => `
+        <div class="option-row" data-tone="${OPTION_TONES[index] ?? "red"}">
           <input type="radio" name="correct-${question.id}" data-field="correctOption" data-question-id="${question.id}" value="${option.id}" ${option.id === question.correctOptionId ? "checked" : ""} ${isPoll ? "disabled" : ""} aria-label="Correct answer" />
+          <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
           <input data-field="optionText" data-question-id="${question.id}" data-option-id="${option.id}" maxlength="140" value="${escapeHtml(option.text)}" />
         </div>
       `).join("")}
@@ -275,46 +326,72 @@ function renderOptionEditor(question, isPoll) {
 
 function renderHostConsole() {
   const remote = state.remote ?? state.session;
-  const question = remote.currentQuestion;
+  if (remote.phase === "lobby") {
+    return renderHostLobby(remote);
+  }
+
+  return renderPresenterStage(remote);
+}
+
+function renderHostLobby(remote) {
   const joinLink = getJoinLink(remote.pin);
+  const publicJoinPath = `${location.host}${location.pathname}#player`;
 
   return `
-    <section class="layout host-layout">
-      <div class="stack">
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <p class="muted">PIN</p>
-              <div class="pin">${remote.pin}</div>
-            </div>
-            <div class="nav-actions">
-              <button type="button" class="secondary" data-action="copy-link">Copy join link</button>
-              <button type="button" class="ghost" data-action="host-end" ${remote.phase === "ended" ? "disabled" : ""}>End</button>
-            </div>
-          </div>
-          <p class="muted">${escapeHtml(joinLink)}</p>
+    <section class="shader-screen shader-blue host-lobby" data-motion-trigger="ambient-drift">
+      ${renderStageBar(remote, "lobby")}
+      <div class="lobby-pin-card">
+        <div class="join-instructions">
+          <span>Join at</span>
+          <strong>${escapeHtml(publicJoinPath)}</strong>
+          <span>or use the Pinboard Live app screen.</span>
         </div>
-        <div class="status-grid">
-          <div class="stat"><span>Players</span><strong>${remote.playerCount}</strong></div>
-          <div class="stat"><span>Answers</span><strong>${remote.answerCount}</strong></div>
-          <div class="stat"><span>Phase</span><strong>${formatPhase(remote.phase)}</strong></div>
-          <div class="stat"><span>Item</span><strong>${formatProgress(remote)}</strong></div>
+        <div class="pin-divider" aria-hidden="true"></div>
+        <div class="game-pin-block">
+          <span>Game PIN:</span>
+          <strong>${formatPin(remote.pin)}</strong>
         </div>
-        ${question ? renderLiveQuestion(remote, true) : renderLobby(remote)}
-        ${renderHostControls(remote)}
+        <button class="qr-tile" type="button" data-action="copy-link" aria-label="Copy join link">
+          ${renderJoinCodeArt(remote.pin)}
+        </button>
       </div>
-      <aside class="stack">
-        <section class="panel">
-          <h2 class="panel-title">Leaderboard</h2>
+      <div class="host-start-cluster">
+        <button class="lock-button" type="button" data-action="copy-link" aria-label="Copy join link">Link</button>
+        <button class="start-button" type="button" data-action="host-start">Start</button>
+      </div>
+      <div class="lobby-center">
+        <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span><em>live</em></div>
+        <div class="waiting-pill">Waiting for participants</div>
+        <p class="lobby-link">${escapeHtml(joinLink)}</p>
+      </div>
+      <div class="participant-dock">
+        <div class="dock-stat"><span>Players</span><strong>${remote.playerCount}</strong></div>
+        ${renderParticipantList(remote)}
+      </div>
+    </section>
+  `;
+}
+
+function renderPresenterStage(remote) {
+  const question = remote.currentQuestion;
+
+  return `
+    <section class="shader-screen shader-question presenter-stage" data-motion-trigger="ambient-drift">
+      ${renderStageBar(remote, "question")}
+      <div class="stage-status-strip">
+        <div><span>Players</span><strong>${remote.playerCount}</strong></div>
+        <div><span>Answers</span><strong>${remote.answerCount}</strong></div>
+        <div><span>Phase</span><strong>${formatPhase(remote.phase)}</strong></div>
+        <div><span>Item</span><strong>${formatProgress(remote)}</strong></div>
+      </div>
+      ${question ? renderLiveQuestion(remote, true) : renderLobby(remote)}
+      <div class="stage-bottom-row">
+        ${renderHostControls(remote)}
+        <section class="leaderboard-panel">
+          <h2>Leaderboard</h2>
           ${renderLeaderboard(remote.leaderboard)}
         </section>
-        <section class="panel">
-          <h2 class="panel-title">Recent players</h2>
-          <div class="leaderboard">
-            ${remote.recentPlayers.map((player) => `<div class="leader-row"><span></span><strong>${escapeHtml(player.nickname)}</strong><span>${player.score}</span></div>`).join("") || `<p class="muted">Waiting for players.</p>`}
-          </div>
-        </section>
-      </aside>
+      </div>
     </section>
   `;
 }
@@ -333,7 +410,7 @@ function renderHostControls(remote) {
   const question = remote.currentQuestion;
   const isSlide = question?.kind === "slide";
   return `
-    <div class="panel nav-actions">
+    <div class="host-controls">
       <button type="button" data-action="host-start" ${remote.phase !== "lobby" ? "disabled" : ""}>Start</button>
       <button type="button" data-action="host-open" ${remote.phase !== "question" || isSlide ? "disabled" : ""}>Open answers</button>
       <button type="button" data-action="host-reveal" ${remote.phase !== "answering" ? "disabled" : ""}>Reveal</button>
@@ -344,38 +421,39 @@ function renderHostControls(remote) {
 
 function renderPlayer() {
   if (!state.playerId || !state.remote) {
-    return `
-      <section class="panel">
-        <form class="stack" data-action="join">
-          <h1 class="panel-title">Join</h1>
-          <div class="field-grid">
-            <label>PIN <input inputmode="numeric" maxlength="6" data-field="playerPin" value="${escapeHtml(state.playerPin)}" /></label>
-            <label>Name <input maxlength="32" data-field="nickname" value="${escapeHtml(state.nickname)}" /></label>
-          </div>
-          <button type="submit">Join</button>
-        </form>
-      </section>
-    `;
+    return renderJoinScreen(false);
   }
 
   const remote = state.remote;
+  if (!remote.currentQuestion || remote.phase === "lobby") {
+    return renderPlayerWaiting(remote);
+  }
+
   return `
-    <section class="layout player-layout">
-      <div class="stack">
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h1 class="panel-title">${escapeHtml(remote.title)}</h1>
-              <p class="muted">PIN ${remote.pin} · ${escapeHtml(remote.me?.nickname ?? "")} · ${remote.me?.score ?? 0} points</p>
-            </div>
-          </div>
-        </div>
-        ${remote.currentQuestion ? renderLiveQuestion(remote, false) : renderLobby(remote)}
-      </div>
-      <aside class="panel">
-        <h2 class="panel-title">Leaderboard</h2>
+    <section class="shader-screen shader-player player-stage" data-motion-trigger="ambient-drift">
+      <header class="player-topbar">
+        <strong>${escapeHtml(remote.me?.nickname ?? "Player")}</strong>
+        <span>PIN ${remote.pin}</span>
+        <strong>${remote.me?.score ?? 0} pts</strong>
+      </header>
+      ${renderLiveQuestion(remote, false)}
+      <aside class="leaderboard-panel player-leaderboard">
+        <h2>Top scores</h2>
         ${renderLeaderboard(remote.leaderboard)}
       </aside>
+    </section>
+  `;
+}
+
+function renderPlayerWaiting(remote) {
+  return `
+    <section class="shader-screen shader-blue player-waiting" data-motion-trigger="ambient-drift">
+      <div class="player-ready-card">
+        <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span></div>
+        <h1>You are in</h1>
+        <p>${escapeHtml(remote.me?.nickname ?? "Player")} - wait for the host to start.</p>
+        <div class="dock-stat"><span>Score</span><strong>${remote.me?.score ?? 0}</strong></div>
+      </div>
     </section>
   `;
 }
@@ -387,10 +465,13 @@ function renderLiveQuestion(remote, isHost) {
   const canAnswer = !isHost && remote.phase === "answering" && question.kind !== "slide" && !selectedOptionId;
 
   return `
-    <section class="current-slide">
-      <p class="muted">${formatQuestionLabel(question, remote)}</p>
+    <section class="current-slide live-question ${isHost ? "host-question" : "player-question"}">
+      <div class="question-meta-row">
+        <span>${formatQuestionLabel(question, remote)}</span>
+        <strong>${formatPhase(remote.phase)}</strong>
+      </div>
       <h1>${escapeHtml(question.text)}</h1>
-      ${renderMedia(question.media)}
+      <div class="question-media-frame">${renderMedia(question.media)}</div>
       ${question.kind === "slide" ? "" : `
         <div class="answer-grid">
           ${question.options.map((option, index) => {
@@ -399,9 +480,10 @@ function renderLiveQuestion(remote, isHost) {
             const isCorrect = remote.phase !== "answering" && option.id === question.correctOptionId;
             const isWrong = remote.phase !== "answering" && isSelected && option.id !== question.correctOptionId;
             return `
-              <button type="button" class="answer-button ${isSelected ? "is-selected" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "0"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
+              <button type="button" class="answer-button ${isSelected ? "is-selected" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
+                <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
                 <strong>${escapeHtml(option.text)}</strong>
-                ${isHost || remote.phase === "results" ? `<span class="bar" style="transform: scaleX(${count / answerTotal})"></span>` : ""}
+                ${isHost || remote.phase === "results" ? `<span class="answer-count">${count}</span><span class="bar" style="transform: scaleX(${count / answerTotal})"></span>` : ""}
               </button>
             `;
           }).join("")}
@@ -443,6 +525,46 @@ function renderLeaderboard(players) {
 
 function renderSelectOption(value, label, selectedValue) {
   return `<option value="${value}" ${value === selectedValue ? "selected" : ""}>${label}</option>`;
+}
+
+function renderStageBar(remote, variant) {
+  return `
+    <header class="stage-bar">
+      <button class="stage-brand" type="button" data-action="go-presenter" aria-label="Back to presenter">
+        <span>Pinboard<span>!</span></span>
+        <em>${variant === "lobby" ? "live" : formatPhase(remote.phase)}</em>
+      </button>
+      <div class="stage-tools" aria-label="Host tools">
+        <span>${remote.playerCount}</span>
+        <button type="button" data-action="copy-link">Copy link</button>
+        <button type="button" data-action="host-end" ${remote.phase === "ended" ? "disabled" : ""}>End</button>
+      </div>
+    </header>
+  `;
+}
+
+function renderParticipantList(remote) {
+  if (!remote.recentPlayers.length) {
+    return `<p class="dock-empty">No one has joined yet.</p>`;
+  }
+
+  return `
+    <div class="participant-list">
+      ${remote.recentPlayers.slice(0, 8).map((player) => `
+        <span>${escapeHtml(player.nickname)}</span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderJoinCodeArt(pin) {
+  const seed = pin.split("").reduce((sum, digit, index) => sum + Number(digit) * (index + 3), 17);
+  const cells = Array.from({ length: 64 }, (_, index) => {
+    const active = (seed + index * 7 + Math.floor(index / 8) * 11) % 5 !== 0;
+    return `<span class="${active ? "is-on" : ""}"></span>`;
+  }).join("");
+
+  return `<span class="qr-grid" aria-hidden="true">${cells}</span><strong>Copy link</strong>`;
 }
 
 async function authenticatePresenter() {
@@ -766,7 +888,20 @@ function formatProgress(remote) {
 
 function formatQuestionLabel(question, remote) {
   const type = question.kind === "quiz" ? `${question.points} points` : question.kind;
-  return `${formatProgress(remote)} · ${type}`;
+  return `${formatProgress(remote)} - ${type}`;
+}
+
+function formatPin(pin) {
+  return String(pin).replace(/^(\d{3})(\d{3})$/, "$1 $2");
+}
+
+function getQuestionTypeLabel(kind) {
+  const labels = {
+    quiz: "Quiz",
+    poll: "Poll",
+    slide: "Slide"
+  };
+  return labels[kind] ?? kind;
 }
 
 function formatBytes(bytes) {
