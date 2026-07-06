@@ -8,10 +8,12 @@
 - Added responsive rules for desktop portrait, desktop landscape, and mobile so immersive views do not horizontally clip.
 - Reset immersive views to the top of the page and tightened lobby spacing for shorter landscape browser windows.
 - Fixed a stale player resume notice race after joining a fresh PIN.
+- Added a presenter-side live question frame with status orb, answer meter, and media/placeholder area.
+- Split live host and player waiting shader palettes so they stay in the same blue-violet family but remain visually distinct.
 
 ### Files Modified
-- `public/app.js` - new join, creator, lobby, presenter-stage, player-stage, and answer tile renderers.
-- `public/styles.css` - shader-gradient backgrounds, Kahoot-style stage layout, answer tile system, and responsive fixes.
+- `public/app.js` - new join, creator, lobby, presenter-stage, player-stage, presenter question frame, and answer tile renderers.
+- `public/styles.css` - shader-gradient backgrounds, Kahoot-style stage layout, presenter question frame, answer tile system, and responsive fixes.
 - `PROJECT_LOG.md` - task record.
 
 ### Assumptions Made (flag these for review)

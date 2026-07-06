@@ -380,7 +380,7 @@ function renderPresenterStage(remote) {
   const question = remote.currentQuestion;
 
   return `
-    <section class="shader-screen shader-question presenter-stage" data-motion-trigger="ambient-drift">
+    <section class="shader-screen shader-live-host presenter-stage" data-motion-trigger="ambient-drift">
       ${renderStageBar(remote, "question")}
       <div class="stage-status-strip">
         <div><span>Players</span><strong>${remote.playerCount}</strong></div>
@@ -451,7 +451,7 @@ function renderPlayer() {
 
 function renderPlayerWaiting(remote) {
   return `
-    <section class="shader-screen shader-blue player-waiting" data-motion-trigger="ambient-drift">
+    <section class="shader-screen shader-waiting player-waiting" data-motion-trigger="ambient-drift">
       <div class="player-ready-card">
         <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span></div>
         <h1>You are in</h1>
@@ -475,7 +475,7 @@ function renderLiveQuestion(remote, isHost) {
         <strong>${formatPhase(remote.phase)}</strong>
       </div>
       <h1>${escapeHtml(question.text)}</h1>
-      <div class="question-media-frame">${renderMedia(question.media)}</div>
+      ${isHost ? renderPresenterQuestionFrame(question, remote) : `<div class="question-media-frame">${renderMedia(question.media)}</div>`}
       ${question.kind === "slide" ? "" : `
         <div class="answer-grid">
           ${question.options.map((option, index) => {
@@ -494,6 +494,33 @@ function renderLiveQuestion(remote, isHost) {
         </div>
       `}
     </section>
+  `;
+}
+
+function renderPresenterQuestionFrame(question, remote) {
+  const phaseLabel = {
+    question: "Ready",
+    answering: "Open",
+    results: "Done",
+    ended: "Done"
+  }[remote.phase] ?? "Live";
+
+  return `
+    <div class="presenter-question-frame">
+      <div class="host-timer-orb" aria-label="Question status">${phaseLabel}</div>
+      <div class="presenter-media-display">
+        ${question.media ? renderMedia(question.media) : `
+          <div class="presenter-media-placeholder" aria-hidden="true">
+            <span class="placeholder-mark">Pinboard<span>!</span></span>
+            <span class="placeholder-lines"></span>
+          </div>
+        `}
+      </div>
+      <div class="host-answer-meter">
+        <strong>${remote.answerCount}</strong>
+        <span>Answers</span>
+      </div>
+    </div>
   `;
 }
 
