@@ -152,7 +152,7 @@ label {
 }
 
 .view {
-  width: min(1180px, calc(100vw - 32px));
+  width: min(1680px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
   margin: 0 auto;
   padding: 28px 0 48px;
@@ -239,6 +239,7 @@ label {
 }
 
 @media (min-width: 1500px) {
+  .builder-layout,
   .host-layout,
   .player-layout {
     grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);

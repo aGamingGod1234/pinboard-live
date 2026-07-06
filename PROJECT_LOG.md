@@ -141,3 +141,22 @@
 
 ### Suggested Next Steps
 - Add Chrome viewport checks for desktop portrait, desktop landscape, and mobile.
+
+## [2026-07-06] — Landscape desktop builder layout fix
+
+### What Was Implemented
+- Increased the page shell max width so landscape desktop uses available space instead of staying in a narrow centered column.
+- Re-enabled the build-deck side rail only at very wide widths where it can fit inside the viewport.
+
+### Files Modified
+- `public/styles.css` — wider page shell and landscape-safe builder side rail breakpoint.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- The landscape desktop view should use more horizontal space while portrait desktop remains single-column.
+
+### Known Issues / Deferred
+- Chrome plugin viewport cannot be resized from this session, so live Chrome verification is done at the available Chrome viewport plus CSS breakpoint inspection.
+
+### Suggested Next Steps
+- Add scripted viewport visual checks outside the plugin for 1080x1800 and 2048x1152.
