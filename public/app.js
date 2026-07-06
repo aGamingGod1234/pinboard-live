@@ -609,6 +609,8 @@ async function joinSession() {
   state.playerId = response.playerId;
   state.playerPin = pin;
   state.remote = response.session;
+  state.restoreKey = `${pin}:${state.playerId}`;
+  state.notice = "";
   localStorage.setItem(STORAGE_KEYS.playerId, state.playerId);
   localStorage.setItem(STORAGE_KEYS.playerPin, state.playerPin);
   setMode("player");
@@ -628,11 +630,17 @@ async function restorePlayerIfPossible() {
 
   try {
     const response = await postJson(`/api/sessions/${pin}/resume`, { playerId: state.playerId });
+    if (state.restoreKey !== restoreKey || state.mode !== "player") {
+      return;
+    }
     state.playerPin = pin;
     state.remote = response.session;
     connectEvents(pin, "player", state.playerId);
     render();
   } catch {
+    if (state.restoreKey !== restoreKey || state.remote?.pin === pin) {
+      return;
+    }
     localStorage.removeItem(STORAGE_KEYS.playerId);
     state.playerId = "";
     state.notice = "Join again to enter this live session.";

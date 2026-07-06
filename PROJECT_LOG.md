@@ -7,6 +7,7 @@
 - Reworked the creator into an adaptive workspace with question strip, main editor, launch area, and limits inspector.
 - Added responsive rules for desktop portrait, desktop landscape, and mobile so immersive views do not horizontally clip.
 - Reset immersive views to the top of the page and tightened lobby spacing for shorter landscape browser windows.
+- Fixed a stale player resume notice race after joining a fresh PIN.
 
 ### Files Modified
 - `public/app.js` - new join, creator, lobby, presenter-stage, player-stage, and answer tile renderers.
