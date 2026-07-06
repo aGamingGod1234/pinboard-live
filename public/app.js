@@ -235,17 +235,17 @@ function renderQuestionEditor(question, index) {
   return `
     <article class="question-card">
       <div class="question-head">
-        <label>Type
+        <label class="question-field question-field-type">Type
           <select data-field="questionKind" data-question-id="${question.id}">
             ${renderSelectOption("quiz", "Quiz", question.kind)}
             ${renderSelectOption("poll", "Poll", question.kind)}
             ${renderSelectOption("slide", "Slide", question.kind)}
           </select>
         </label>
-        <label>Text
+        <label class="question-field question-field-text">Text
           <textarea data-field="questionText" data-question-id="${question.id}" maxlength="500">${escapeHtml(question.text)}</textarea>
         </label>
-        <label>Points
+        <label class="question-field question-field-points">Points
           <input type="number" min="0" max="1000000" step="100" ${isSlide || isPoll ? "disabled" : ""} data-field="points" data-question-id="${question.id}" value="${question.points}" />
         </label>
         <button type="button" class="ghost" data-action="remove-question" data-question-id="${question.id}" ${state.draft.questions.length === 1 ? "disabled" : ""}>Remove</button>

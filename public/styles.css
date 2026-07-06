@@ -11,10 +11,17 @@
   --violet: #7657c7;
   --shadow: 0 18px 45px rgba(16, 18, 22, 0.08);
   --radius: 8px;
+  --page-gutter: clamp(16px, 4vw, 64px);
+  --layout-column-min: min(100%, 34rem);
 }
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--paper);
 }
 
 body {
@@ -22,6 +29,7 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  min-height: 100vh;
 }
 
 button,
@@ -92,7 +100,8 @@ label {
 }
 
 .app-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--paper);
 }
 
 .topbar {
@@ -152,8 +161,8 @@ label {
 }
 
 .view {
-  width: min(1680px, calc(100vw - clamp(32px, 5vw, 96px)));
-  max-width: calc(100vw - 32px);
+  width: min(1680px, calc(100vw - (var(--page-gutter) * 2)));
+  max-width: calc(100vw - 24px);
   margin: 0 auto;
   padding: 28px 0 48px;
 }
@@ -233,17 +242,14 @@ label {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(var(--layout-column-min), 1fr));
   gap: 18px;
   align-items: start;
 }
 
-@media (min-width: 1500px) {
-  .builder-layout,
-  .host-layout,
-  .player-layout {
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
-  }
+.host-layout,
+.player-layout {
+  --layout-column-min: min(100%, 30rem);
 }
 
 .layout > *,
@@ -287,19 +293,15 @@ label {
 
 .question-card {
   padding: 16px;
+  container-type: inline-size;
 }
 
 .question-head {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) 120px auto;
+  grid-template-columns: minmax(9rem, 0.8fr) minmax(20rem, 3fr) minmax(8rem, 0.75fr) auto;
   gap: 10px;
   align-items: end;
   margin-bottom: 12px;
-}
-
-.builder-layout .panel,
-.builder-layout .question-card {
-  overflow: hidden;
 }
 
 .builder-layout input,
@@ -479,8 +481,18 @@ label {
   }
 }
 
-@media (max-width: 1500px) {
-  .builder-layout .question-head {
+@container (max-width: 58rem) {
+  .question-head {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .question-field-text {
+    grid-column: 1 / -1;
+  }
+}
+
+@container (max-width: 38rem) {
+  .question-head {
     grid-template-columns: 1fr;
   }
 

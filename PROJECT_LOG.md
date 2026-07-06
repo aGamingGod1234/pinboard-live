@@ -181,3 +181,25 @@
 
 ### Suggested Next Steps
 - Add automated checks for the exact desktop app viewport sizes shown in screenshots.
+
+## [2026-07-06] — Fluid adaptive layout pass
+
+### What Was Implemented
+- Replaced orientation-specific layout tuning with fluid auto-fit grid columns.
+- Added viewport-driven page gutters so desktop app, landscape browser, portrait desktop, and mobile widths use proportional spacing.
+- Added container-query behavior for the question editor row so `Type`, `Text`, `Points`, and `Remove` adapt to the actual card width.
+- Added explicit page background/min-height handling so the app surface fills the browser area consistently.
+
+### Files Modified
+- `public/app.js` — added stable field classes for adaptive editor layout.
+- `public/styles.css` — fluid page shell, auto-fit grids, and container-query editor layout.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- A component/container-based layout is preferable to maintaining separate portrait and landscape breakpoints.
+
+### Known Issues / Deferred
+- Automated visual regression tests still need to be added for the exact desktop shell dimensions.
+
+### Suggested Next Steps
+- Add a small scripted Chrome viewport audit that fails if any important panel extends beyond the viewport.
