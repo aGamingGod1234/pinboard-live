@@ -2,6 +2,7 @@ const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 const DEFAULT_POINTS = 1000;
 const DEFAULT_OPTIONS = ["Red", "Blue", "Gold", "Green"];
 const OPTION_TONES = ["0", "1", "2", "3", "4", "5"];
+const LIVE_RECONNECT_NOTICE = "Live connection is retrying.";
 const STORAGE_KEYS = {
   hostToken: "pinboard.hostToken",
   playerId: "pinboard.playerId",
@@ -553,13 +554,24 @@ function connectEvents(pin, role, playerId) {
   }
 
   state.eventSource = new EventSource(`/events?${params.toString()}`);
+  state.eventSource.addEventListener("open", () => {
+    if (state.notice === LIVE_RECONNECT_NOTICE) {
+      state.notice = "";
+      render();
+    }
+  });
   state.eventSource.addEventListener("state", (event) => {
     state.remote = JSON.parse(event.data);
+    if (state.notice === LIVE_RECONNECT_NOTICE) {
+      state.notice = "";
+    }
     render();
   });
   state.eventSource.onerror = () => {
-    state.notice = "Live connection is retrying.";
-    render();
+    if (state.notice !== LIVE_RECONNECT_NOTICE) {
+      state.notice = LIVE_RECONNECT_NOTICE;
+      render();
+    }
   };
 }
 

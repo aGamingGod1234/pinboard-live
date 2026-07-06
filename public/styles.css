@@ -231,9 +231,18 @@ label {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
   gap: 18px;
   align-items: start;
+}
+
+.layout > *,
+.panel,
+.current-slide,
+.stat,
+.answer-button,
+.leader-row {
+  min-width: 0;
 }
 
 .stack {
@@ -323,6 +332,7 @@ label {
   font-weight: 950;
   letter-spacing: 0;
   line-height: 1;
+  overflow-wrap: anywhere;
 }
 
 .current-slide {
@@ -417,6 +427,7 @@ label {
 
 .muted {
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .error,
@@ -439,12 +450,17 @@ label {
   display: none;
 }
 
+@media (max-width: 1400px) {
+  .layout,
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 860px) {
   .hero-grid,
-  .layout,
   .field-grid,
   .question-head,
-  .status-grid,
   .answer-grid,
   .mode-grid {
     grid-template-columns: 1fr;

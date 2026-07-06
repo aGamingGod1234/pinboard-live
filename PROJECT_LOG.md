@@ -73,3 +73,25 @@
 - Persist decks and completed game reports in PostgreSQL.
 - Move media uploads to signed object storage.
 - Add rate limits and lobby moderation controls.
+
+## [2026-07-06] — Chrome presenter layout fix
+
+### What Was Implemented
+- Used the Chrome plugin against the live Railway URL to reproduce the presenter flow.
+- Changed the presenter console to stack the side rail earlier so it does not crop on narrower or scaled Chrome windows.
+- Added min-width and overflow wrapping safeguards for panels, long PIN/join-link text, and compact controls.
+- Cleared stale live-reconnect notices when the SSE connection opens or receives state.
+
+### Files Modified
+- `public/styles.css` — responsive presenter layout and overflow hardening.
+- `public/app.js` — clears stale live connection retry notice after reconnect/state.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- Preserving a non-cropped presenter console is more important than keeping the side rail beside the main console at medium desktop widths.
+
+### Known Issues / Deferred
+- Active live sessions are still in memory and reset on deployment.
+
+### Suggested Next Steps
+- Add automated Chrome viewport checks for presenter and player routes before each deploy.
