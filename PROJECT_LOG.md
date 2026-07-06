@@ -81,10 +81,11 @@
 - Changed the presenter console to stack the side rail earlier so it does not crop on narrower or scaled Chrome windows.
 - Added min-width and overflow wrapping safeguards for panels, long PIN/join-link text, and compact controls.
 - Cleared stale live-reconnect notices when the SSE connection opens or receives state.
+- Fixed player hash-route changes so opening a different PIN in an already-used player tab resets the stale player session.
 
 ### Files Modified
 - `public/styles.css` — responsive presenter layout and overflow hardening.
-- `public/app.js` — clears stale live connection retry notice after reconnect/state.
+- `public/app.js` — clears stale live connection retry notice after reconnect/state and resets stale player state on new PIN links.
 - `PROJECT_LOG.md` — task record.
 
 ### Assumptions Made (flag these for review)

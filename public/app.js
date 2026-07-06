@@ -31,8 +31,20 @@ render();
 void restorePlayerIfPossible();
 
 window.addEventListener("hashchange", () => {
-  state.mode = getInitialMode();
-  state.playerPin = getHashParam("pin") ?? state.playerPin;
+  const nextMode = getInitialMode();
+  const hashPin = getHashParam("pin");
+  const nextPin = normalizeStoredPin(hashPin);
+  const currentPin = normalizeStoredPin(state.playerPin);
+
+  if (nextMode === "player" && nextPin && nextPin !== currentPin) {
+    state.playerId = "";
+    state.remote = null;
+    state.restoreKey = "";
+    localStorage.removeItem(STORAGE_KEYS.playerId);
+  }
+
+  state.mode = nextMode;
+  state.playerPin = hashPin ?? state.playerPin;
   render();
   void restorePlayerIfPossible();
 });
