@@ -82,10 +82,11 @@
 - Added min-width and overflow wrapping safeguards for panels, long PIN/join-link text, and compact controls.
 - Cleared stale live-reconnect notices when the SSE connection opens or receives state.
 - Fixed player hash-route changes so opening a different PIN in an already-used player tab resets the stale player session.
+- Made join-link PINs take precedence over stored local PINs on initial page load.
 
 ### Files Modified
 - `public/styles.css` — responsive presenter layout and overflow hardening.
-- `public/app.js` — clears stale live connection retry notice after reconnect/state and resets stale player state on new PIN links.
+- `public/app.js` — clears stale live connection retry notice after reconnect/state, resets stale player state on new PIN links, and prioritizes join-link PINs.
 - `PROJECT_LOG.md` — task record.
 
 ### Assumptions Made (flag these for review)

@@ -14,7 +14,7 @@ const state = {
   mode: getInitialMode(),
   hostToken: localStorage.getItem(STORAGE_KEYS.hostToken) ?? "",
   playerId: localStorage.getItem(STORAGE_KEYS.playerId) ?? "",
-  playerPin: localStorage.getItem(STORAGE_KEYS.playerPin) ?? getHashParam("pin") ?? "",
+  playerPin: getHashParam("pin") ?? localStorage.getItem(STORAGE_KEYS.playerPin) ?? "",
   presenterEmail: "",
   presenterPassword: "",
   nickname: "",
