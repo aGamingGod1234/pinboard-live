@@ -96,3 +96,26 @@
 
 ### Suggested Next Steps
 - Add automated Chrome viewport checks for presenter and player routes before each deploy.
+
+## [2026-07-06] — PostgreSQL live session snapshots
+
+### What Was Implemented
+- Added PostgreSQL persistence for active live session snapshots.
+- Hydrated sessions from PostgreSQL on session API and SSE requests to avoid orphaning PINs after Railway restarts or process changes.
+- Preserved local SSE clients when refreshing a session from the database.
+
+### Files Modified
+- `server.mjs` — `live_sessions` table, session serialization, persistence, hydration, and async session lookups.
+- `README.md` — updated architecture and scale notes.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- Snapshot persistence is the fastest acceptable production hardening step before a full normalized sessions/answers schema.
+
+### Known Issues / Deferred
+- Cross-instance SSE fanout still needs Redis, WebSockets with an adapter, or a room actor service for very large audiences.
+- Concurrent writes use last-write-wins JSON snapshots instead of transactional per-answer rows.
+
+### Suggested Next Steps
+- Normalize live sessions, players, answers, and reports into relational tables.
+- Add a pub/sub layer for cross-instance live updates.

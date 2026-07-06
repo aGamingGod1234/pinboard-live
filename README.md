@@ -24,6 +24,7 @@ Set `PRESENTER_EMAIL`, `PRESENTER_PASSWORD`, and `AUTH_SECRET` to change this. S
 - One Node.js server serves the app and owns in-memory session state.
 - Presenters authenticate with email/password and receive a signed presenter token.
 - PostgreSQL stores presenter credentials when `DATABASE_URL` is configured.
+- PostgreSQL stores active live session snapshots when `DATABASE_URL` is configured, so Railway deploys/restarts do not immediately orphan active PINs.
 - Players join anonymously with a 6-digit PIN and nickname.
 - Player IDs are stored locally so a refresh can resume the same participant while the in-memory session exists.
 - Server-Sent Events push live state to presenter and player screens.
@@ -32,6 +33,6 @@ Set `PRESENTER_EMAIL`, `PRESENTER_PASSWORD`, and `AUTH_SECRET` to change this. S
 
 ## Scale Notes
 
-This prototype has no hard player cap, but a single in-memory Node process is not a true unlimited-user deployment. Production scale needs shared session storage, a pub/sub fanout layer, rate limits, durable media storage, and load-balanced SSE or WebSocket infrastructure.
+This prototype has no hard player cap, but a single Node service is not a true unlimited-user deployment. Production scale still needs a pub/sub fanout layer, rate limits, durable media storage, and load-balanced SSE or WebSocket infrastructure.
 
 The research agents recommended a production shape of server-authoritative rooms, presenter tokens, anonymous player tokens, full-state snapshots after reconnect, acked answer submissions, and either Socket.IO plus Redis/Postgres or a room-actor design such as Cloudflare Durable Objects for large live audiences.

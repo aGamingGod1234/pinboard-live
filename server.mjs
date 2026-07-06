@@ -106,7 +106,7 @@ async function routeRequest(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/events") {
-    handleEventStream(request, response, url);
+    await handleEventStream(request, response, url);
     return;
   }
 
@@ -155,7 +155,7 @@ async function handleCreateSession(request, response) {
   const body = await readJson(request);
   const title = limitText(readString(body.title, "Deck title"), MAX_TITLE_LENGTH, "Deck title");
   const questions = normalizeQuestions(body.questions);
-  const pin = createUniquePin();
+  const pin = await createUniquePin();
 
   /** @type {Session} */
   const session = {
@@ -174,6 +174,7 @@ async function handleCreateSession(request, response) {
   };
 
   sessions.set(pin, session);
+  await persistSession(session);
   sendJson(response, 201, {
     pin,
     session: getStateForRole(session, "host", null)
@@ -181,7 +182,7 @@ async function handleCreateSession(request, response) {
 }
 
 async function handleSessionAction(request, response, pin, action) {
-  const session = getSession(pin);
+  const session = await getSession(pin);
 
   switch (action) {
     case "join":
@@ -217,6 +218,7 @@ async function handleSessionAction(request, response, pin, action) {
       throw new HttpError(404, "Session action was not found.");
   }
 
+  await persistSession(session);
   broadcastState(session);
   sendJson(response, 200, { session: getStateForRole(session, "host", null) });
 }
@@ -236,6 +238,7 @@ async function handleJoin(request, response, session) {
   }
 
   session.players.set(player.id, player);
+  await persistSession(session);
   broadcastState(session);
   sendJson(response, 201, {
     playerId: player.id,
@@ -283,6 +286,7 @@ async function handleAnswer(request, response, session) {
     session.answers.set(playerId, { optionId, answeredAt: Date.now() });
   }
 
+  await persistSession(session);
   broadcastState(session);
   sendJson(response, 200, {
     accepted: true,
@@ -374,11 +378,11 @@ function scoreCurrentQuestion(session, question) {
   session.scoredQuestionIndexes.add(session.currentQuestionIndex);
 }
 
-function handleEventStream(request, response, url) {
+async function handleEventStream(request, response, url) {
   const pin = normalizePin(url.searchParams.get("pin"));
   const role = url.searchParams.get("role") === "host" ? "host" : "player";
   const playerId = url.searchParams.get("playerId");
-  const session = getSession(pin);
+  const session = await getSession(pin);
 
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -701,6 +705,13 @@ async function initializeDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await database.query(`
+    CREATE TABLE IF NOT EXISTS live_sessions (
+      pin TEXT PRIMARY KEY,
+      snapshot JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 async function bootstrapPresenter() {
@@ -803,8 +814,9 @@ function normalizeEmail(email) {
   return String(email).trim().toLowerCase();
 }
 
-function getSession(pin) {
-  const session = sessions.get(normalizePin(pin));
+async function getSession(pin) {
+  const normalizedPin = normalizePin(pin);
+  const session = database ? await loadPersistedSession(normalizedPin) : sessions.get(normalizedPin);
   if (!session) {
     throw new HttpError(404, "Session was not found.");
   }
@@ -818,14 +830,90 @@ function normalizePin(pin) {
   return pin;
 }
 
-function createUniquePin() {
+async function createUniquePin() {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const pin = String(Math.floor(Math.random() * 10 ** GAME_PIN_LENGTH)).padStart(GAME_PIN_LENGTH, "0");
-    if (!sessions.has(pin)) {
+    if (!sessions.has(pin) && !(await persistedSessionExists(pin))) {
       return pin;
     }
   }
   throw new HttpError(503, "No session PINs are available right now.");
+}
+
+async function persistedSessionExists(pin) {
+  if (!database) {
+    return false;
+  }
+
+  const result = await database.query("SELECT 1 FROM live_sessions WHERE pin = $1", [pin]);
+  return result.rowCount > 0;
+}
+
+async function persistSession(session) {
+  sessions.set(session.pin, session);
+
+  if (!database) {
+    return;
+  }
+
+  await database.query(
+    `
+      INSERT INTO live_sessions (pin, snapshot, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (pin)
+      DO UPDATE SET snapshot = EXCLUDED.snapshot, updated_at = NOW()
+    `,
+    [session.pin, JSON.stringify(serializeSessionSnapshot(session))]
+  );
+}
+
+async function loadPersistedSession(pin) {
+  if (!database) {
+    return sessions.get(pin) ?? null;
+  }
+
+  const result = await database.query("SELECT snapshot FROM live_sessions WHERE pin = $1", [pin]);
+  if (!result.rows[0]) {
+    return null;
+  }
+
+  const localClients = sessions.get(pin)?.clients ?? new Map();
+  const session = hydrateSessionSnapshot(result.rows[0].snapshot, localClients);
+  sessions.set(pin, session);
+  return session;
+}
+
+function serializeSessionSnapshot(session) {
+  return {
+    pin: session.pin,
+    title: session.title,
+    presenterId: session.presenterId,
+    questions: session.questions,
+    phase: session.phase,
+    currentQuestionIndex: session.currentQuestionIndex,
+    players: [...session.players.entries()],
+    answers: [...session.answers.entries()],
+    scoredQuestionIndexes: [...session.scoredQuestionIndexes],
+    openedAt: session.openedAt,
+    createdAt: session.createdAt
+  };
+}
+
+function hydrateSessionSnapshot(snapshot, clients) {
+  return {
+    pin: snapshot.pin,
+    title: snapshot.title,
+    presenterId: snapshot.presenterId,
+    questions: Array.isArray(snapshot.questions) ? snapshot.questions : [],
+    phase: snapshot.phase,
+    currentQuestionIndex: Number(snapshot.currentQuestionIndex),
+    players: new Map(snapshot.players ?? []),
+    answers: new Map(snapshot.answers ?? []),
+    scoredQuestionIndexes: new Set(snapshot.scoredQuestionIndexes ?? []),
+    openedAt: snapshot.openedAt ?? null,
+    clients,
+    createdAt: snapshot.createdAt ?? Date.now()
+  };
 }
 
 function sendJson(response, statusCode, payload) {
