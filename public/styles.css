@@ -281,7 +281,8 @@ label {
     radial-gradient(55% 70% at 80% 12%, var(--shader-glow-a, rgba(255, 255, 255, 0.16)), transparent 64%),
     radial-gradient(58% 80% at 14% 58%, var(--shader-glow-b, rgba(255, 255, 255, 0.09)), transparent 62%),
     linear-gradient(120deg, var(--shader-a), var(--shader-b) 52%, var(--shader-c));
-  animation: shader-drift 16s ease-in-out infinite alternate;
+  background-size: 135% 135%, 145% 145%, 220% 220%;
+  animation: shader-drift 7s ease-in-out infinite alternate;
 }
 
 .shader-screen::after {
@@ -289,8 +290,9 @@ label {
     radial-gradient(60% 76% at 96% 12%, var(--shader-glow-c, rgba(255, 255, 255, 0.16)), transparent 58%),
     linear-gradient(72deg, transparent 15%, var(--shader-slab, rgba(4, 0, 54, 0.28)) 16% 36%, transparent 37%),
     radial-gradient(82% 110% at 54% 118%, rgba(0, 0, 0, 0.22), transparent 62%);
+  background-size: 150% 150%, 180% 180%, 140% 140%;
   mix-blend-mode: soft-light;
-  animation: shader-sweep 19s ease-in-out infinite alternate;
+  animation: shader-sweep 9s ease-in-out infinite alternate;
 }
 
 .shader-purple {
@@ -320,33 +322,33 @@ label {
 }
 
 .shader-live-host {
-  --shader-a: #020202;
-  --shader-b: #4d3600;
-  --shader-c: #253000;
-  --shader-glow-a: rgba(255, 187, 0, 0.4);
-  --shader-glow-b: rgba(212, 255, 0, 0.18);
-  --shader-glow-c: rgba(255, 179, 0, 0.32);
-  --shader-slab: rgba(255, 187, 0, 0.13);
+  --shader-a: #080500;
+  --shader-b: #8a6100;
+  --shader-c: #536800;
+  --shader-glow-a: rgba(255, 187, 0, 0.68);
+  --shader-glow-b: rgba(212, 255, 0, 0.36);
+  --shader-glow-c: rgba(255, 179, 0, 0.5);
+  --shader-slab: rgba(255, 187, 0, 0.2);
 }
 
 .shader-waiting {
-  --shader-a: #030303;
-  --shader-b: #5a4200;
-  --shader-c: #293600;
-  --shader-glow-a: rgba(255, 179, 0, 0.48);
-  --shader-glow-b: rgba(212, 255, 0, 0.2);
-  --shader-glow-c: rgba(255, 187, 0, 0.34);
-  --shader-slab: rgba(212, 255, 0, 0.12);
+  --shader-a: #050300;
+  --shader-b: #795600;
+  --shader-c: #425500;
+  --shader-glow-a: rgba(255, 179, 0, 0.64);
+  --shader-glow-b: rgba(212, 255, 0, 0.3);
+  --shader-glow-c: rgba(255, 187, 0, 0.5);
+  --shader-slab: rgba(212, 255, 0, 0.18);
 }
 
 .shader-player {
-  --shader-a: #020202;
-  --shader-b: #654500;
-  --shader-c: #1d2900;
-  --shader-glow-a: rgba(255, 187, 0, 0.36);
-  --shader-glow-b: rgba(212, 255, 0, 0.16);
-  --shader-glow-c: rgba(255, 179, 0, 0.28);
-  --shader-slab: rgba(255, 187, 0, 0.12);
+  --shader-a: #070400;
+  --shader-b: #8d6200;
+  --shader-c: #3f5700;
+  --shader-glow-a: rgba(255, 187, 0, 0.62);
+  --shader-glow-b: rgba(212, 255, 0, 0.3);
+  --shader-glow-c: rgba(255, 179, 0, 0.48);
+  --shader-slab: rgba(255, 187, 0, 0.18);
 }
 
 .screen-action-row {
@@ -359,7 +361,6 @@ label {
   align-items: center;
 }
 
-.locale-pill,
 .glass-pill {
   display: inline-flex;
   min-height: 36px;
@@ -751,6 +752,34 @@ label {
   background: rgba(255, 255, 255, 0.14);
 }
 
+.stage-next-button {
+  min-width: 96px;
+  background: #fff !important;
+  color: var(--ink) !important;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.28);
+}
+
+.role-badge {
+  position: absolute;
+  top: clamp(14px, 2.2vw, 28px);
+  left: clamp(14px, 2.2vw, 28px);
+  z-index: 3;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  padding: 9px 14px;
+  font-size: 0.78rem;
+  font-weight: 1000;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.32);
+}
+
+.role-badge-inline {
+  position: static;
+  box-shadow: none;
+}
+
 .lobby-pin-card {
   position: relative;
   z-index: 2;
@@ -947,6 +976,74 @@ label {
   align-content: start;
   grid-template-rows: auto auto auto;
   gap: clamp(12px, 2vh, 18px);
+}
+
+.player-answer-stage {
+  display: grid;
+  align-content: stretch;
+  grid-template-rows: auto 1fr auto;
+  padding-bottom: 74px;
+}
+
+.player-round-chip {
+  position: relative;
+  z-index: 2;
+  justify-self: center;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.64);
+  padding: 10px 18px;
+  font-weight: 1000;
+  text-transform: uppercase;
+}
+
+.player-answer-grid {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  min-height: min(78dvh, 860px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(10px, 1.5vw, 18px);
+  align-self: center;
+}
+
+.player-answer-button {
+  min-height: clamp(180px, 36dvh, 420px);
+  justify-content: center;
+}
+
+.player-answer-button .answer-shape {
+  width: clamp(80px, 13vw, 180px);
+  height: clamp(80px, 13vw, 180px);
+}
+
+.player-score-dock {
+  position: fixed;
+  bottom: 12px;
+  left: 14px;
+  z-index: 4;
+  display: grid;
+  min-width: 116px;
+  gap: 0;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.64);
+  padding: 8px 10px;
+  color: #fff;
+  font-weight: 950;
+}
+
+.player-score-dock span {
+  font-size: 1.3rem;
+}
+
+.player-score-dock em {
+  position: absolute;
+  right: -68px;
+  bottom: 8px;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  padding: 5px 10px;
+  font-style: normal;
 }
 
 .stage-status-strip {
@@ -1339,21 +1436,27 @@ label {
 
 @keyframes shader-drift {
   0% {
-    transform: translate3d(-2%, -1%, 0) scale(1);
-    filter: hue-rotate(0deg);
+    background-position: 0% 42%, 80% 12%, 0% 50%;
+    transform: translate3d(-6%, -4%, 0) scale(1.02) rotate(-5deg);
+    filter: hue-rotate(0deg) saturate(1.1) brightness(1.08);
   }
   100% {
-    transform: translate3d(2%, 2%, 0) scale(1.06);
-    filter: hue-rotate(10deg);
+    background-position: 100% 58%, 8% 86%, 100% 50%;
+    transform: translate3d(7%, 5%, 0) scale(1.14) rotate(5deg);
+    filter: hue-rotate(18deg) saturate(1.35) brightness(1.2);
   }
 }
 
 @keyframes shader-sweep {
   0% {
-    transform: translate3d(1%, -2%, 0) rotate(0deg);
+    background-position: 90% 10%, 0% 50%, 50% 100%;
+    transform: translate3d(5%, -6%, 0) rotate(-8deg) scale(1.04);
+    opacity: 0.82;
   }
   100% {
-    transform: translate3d(-2%, 2%, 0) rotate(4deg);
+    background-position: 8% 86%, 100% 50%, 40% 0%;
+    transform: translate3d(-6%, 7%, 0) rotate(10deg) scale(1.16);
+    opacity: 1;
   }
 }
 
@@ -1556,12 +1659,23 @@ label {
 
   .stage-status-strip,
   .answer-grid,
+  .player-answer-grid,
   .stage-bottom-row {
     grid-template-columns: 1fr;
   }
 
-  .answer-button {
+  .answer-button,
+  .player-answer-button {
     min-height: 96px;
+  }
+
+  .player-answer-grid {
+    min-height: auto;
+  }
+
+  .player-answer-button .answer-shape {
+    width: clamp(52px, 18vw, 96px);
+    height: clamp(52px, 18vw, 96px);
   }
 
   .current-slide h1 {

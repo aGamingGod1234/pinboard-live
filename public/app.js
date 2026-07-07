@@ -203,7 +203,6 @@ function renderJoinScreen(showPresenterLink = false) {
   return `
     <section class="shader-screen shader-purple join-screen" data-motion-trigger="ambient-drift">
       <div class="screen-action-row">
-        <span class="locale-pill">EN-GB</span>
         ${showPresenterLink ? `<button class="glass-pill" type="button" data-action="go-presenter">Presenter</button>` : ""}
       </div>
       <div class="join-center">
@@ -429,30 +428,60 @@ function renderPlayer() {
     return renderPlayerWaiting(remote);
   }
 
-  return `
-    <section class="shader-screen shader-player player-stage" data-motion-trigger="ambient-drift">
-      <header class="player-topbar">
-        <strong>${escapeHtml(remote.me?.nickname ?? "Player")}</strong>
-        <span>PIN ${remote.pin}</span>
-        <strong>${remote.me?.score ?? 0} pts</strong>
-      </header>
-      ${renderLiveQuestion(remote, false)}
-      <aside class="leaderboard-panel player-leaderboard">
-        <h2>Top scores</h2>
-        ${renderLeaderboard(remote.leaderboard)}
-      </aside>
-    </section>
-  `;
+  return renderPlayerAnswerStage(remote);
 }
 
 function renderPlayerWaiting(remote) {
   return `
     <section class="shader-screen shader-waiting player-waiting" data-motion-trigger="ambient-drift">
+      <div class="role-badge">Player lobby</div>
       <div class="player-ready-card">
         <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span></div>
-        <h1>You are in</h1>
-        <p>${escapeHtml(remote.me?.nickname ?? "Player")} - wait for the host to start.</p>
+        <p class="eyebrow">PIN ${formatPin(remote.pin)}</p>
+        <h1>You're in</h1>
+        <p>${escapeHtml(remote.me?.nickname ?? "Player")} - wait for the presenter to start.</p>
+        <div class="dock-stat"><span>Players</span><strong>${remote.playerCount}</strong></div>
         <div class="dock-stat"><span>Score</span><strong>${remote.me?.score ?? 0}</strong></div>
+      </div>
+    </section>
+  `;
+}
+
+function renderPlayerAnswerStage(remote) {
+  const question = remote.currentQuestion;
+  const selectedOptionId = remote.selectedOptionId;
+  const canAnswer = remote.phase === "answering" && question.kind !== "slide" && !selectedOptionId;
+  const isCorrect = remote.phase === "results" && selectedOptionId === question.correctOptionId;
+  const earnedPoints = isCorrect ? question.points : 0;
+
+  return `
+    <section class="shader-screen shader-player player-stage player-answer-stage" data-motion-trigger="ambient-drift">
+      <div class="role-badge">Player</div>
+      <div class="player-round-chip">${formatProgress(remote)} ${escapeHtml(getQuestionTypeLabel(question.kind))}</div>
+      ${question.kind === "slide" ? `
+        <div class="player-ready-card">
+          <h1>Look up</h1>
+          <p>The presenter is showing a slide.</p>
+        </div>
+      ` : `
+        <div class="player-answer-grid">
+          ${question.options.map((option, index) => {
+            const isSelected = selectedOptionId === option.id;
+            const showResults = remote.phase === "results" || remote.phase === "ended";
+            const optionCorrect = showResults && option.id === question.correctOptionId;
+            const optionWrong = showResults && isSelected && option.id !== question.correctOptionId;
+            return `
+              <button type="button" class="answer-button player-answer-button ${isSelected ? "is-selected" : ""} ${optionCorrect ? "is-correct" : ""} ${optionWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
+                <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+      `}
+      <div class="player-score-dock">
+        <strong>${escapeHtml(remote.me?.nickname ?? "Player")}</strong>
+        <span>${remote.me?.score ?? 0}</span>
+        ${earnedPoints ? `<em>+${earnedPoints}</em>` : ""}
       </div>
     </section>
   `;
@@ -562,12 +591,34 @@ function renderStageBar(remote, variant) {
         <em>${variant === "lobby" ? "live" : formatPhase(remote.phase)}</em>
       </button>
       <div class="stage-tools" aria-label="Host tools">
+        <span class="role-badge role-badge-inline">Presenter</span>
         <span>${remote.playerCount}</span>
         <button type="button" data-action="copy-link">Copy link</button>
+        ${renderStagePrimaryButton(remote)}
         <button type="button" data-action="host-end" ${remote.phase === "ended" ? "disabled" : ""}>End</button>
       </div>
     </header>
   `;
+}
+
+function renderStagePrimaryButton(remote) {
+  const action = getStagePrimaryAction(remote);
+  if (!action) {
+    return "";
+  }
+
+  return `<button class="stage-next-button" type="button" data-action="${action.action}">${action.label}</button>`;
+}
+
+function getStagePrimaryAction(remote) {
+  const question = remote.currentQuestion;
+  const isSlide = question?.kind === "slide";
+
+  if (remote.phase === "lobby") return { action: "host-start", label: "Start" };
+  if (remote.phase === "question") return isSlide ? { action: "host-next", label: "Next" } : { action: "host-open", label: "Next" };
+  if (remote.phase === "answering") return { action: "host-reveal", label: "Reveal" };
+  if (remote.phase === "results") return { action: "host-next", label: "Next" };
+  return null;
 }
 
 function renderParticipantList(remote) {
@@ -730,7 +781,12 @@ function connectEvents(pin, role, playerId) {
     }
   });
   state.eventSource.addEventListener("state", (event) => {
-    state.remote = JSON.parse(event.data);
+    const nextState = JSON.parse(event.data);
+    if (role === "player" && nextState.endedReason === "presenter_left") {
+      return leavePresentationWithNotice("The presenter has left the presentation.");
+    }
+
+    state.remote = nextState;
     if (state.notice === LIVE_RECONNECT_NOTICE) {
       state.notice = "";
     }
@@ -873,6 +929,22 @@ function createQuestion() {
     correctOptionId: options[0].id,
     media: null
   };
+}
+
+function leavePresentationWithNotice(message) {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+
+  localStorage.removeItem(STORAGE_KEYS.playerId);
+  state.playerId = "";
+  state.remote = null;
+  state.restoreKey = "";
+  state.mode = "home";
+  state.notice = message;
+  location.hash = "";
+  render();
 }
 
 function createOptions(labels) {

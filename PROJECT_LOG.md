@@ -283,3 +283,33 @@
 
 ### Suggested Next Steps
 - Add automated production viewport checks before deploy.
+
+## [2026-07-07] - Live lobby lifecycle and player controller fix
+
+### What Was Implemented
+- Made the home, lobby, host, and player shader backgrounds visibly animated with faster drift and brighter live-game color values.
+- Removed the `EN-GB` language pill from the join screen and removed the related CSS selector.
+- Added a dedicated player waiting lobby after PIN/name join with the PIN, player count, and score.
+- Split the live experience into clearly labeled Presenter and Player sections.
+- Changed the player live question view into a strict four-button answer controller with score pinned at the bottom left.
+- Added presenter top-right primary flow controls: Start, Next, Reveal, and Next based on live phase.
+- Added server-side online presence checks for presenter and players using the live event stream connection.
+- Kicked players back to the home page with `The presenter has left the presentation.` when the presenter disconnects.
+- Removed disconnected players from presenter-side player lists and answer tracking after a short reconnect grace period.
+
+### Files Modified
+- `public/app.js` - player lobby, four-button answer controller, presenter primary action button, and presenter-left client redirect.
+- `public/styles.css` - animated shader background tuning, role badges, player controller grid, and score dock styles.
+- `server.mjs` - presenter/player connection presence, presenter-left session ending, and player disconnect cleanup.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- The current vanilla static app should keep a CSS shader implementation instead of installing `@shadergradient/react`, `three`, and React Three dependencies, because adding them would require a React/Three migration rather than a small production fix.
+- A short reconnect grace period is acceptable so a refresh does not instantly end a host session or remove a player.
+
+### Known Issues / Deferred
+- The CSS shader mimics the supplied ShaderGradient colors and motion but is not the React ShaderGradient WebGL component.
+- A full visual regression suite is still deferred.
+
+### Suggested Next Steps
+- Add automated production viewport checks for home, host lobby, player lobby, presenter question, player answer, and presenter-left redirect.

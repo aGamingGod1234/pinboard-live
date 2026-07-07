@@ -30,6 +30,8 @@ const LEADERBOARD_LIMIT = 20;
 const PASSWORD_KEY_BYTES = 64;
 const PASSWORD_SALT_BYTES = 16;
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const HOST_DISCONNECT_GRACE_MS = 3000;
+const PLAYER_DISCONNECT_GRACE_MS = 2000;
 
 const PORT = Number(process.env.PORT ?? DEFAULT_PORT);
 const HOST = process.env.HOST ?? DEFAULT_HOST;
@@ -50,7 +52,7 @@ const { Pool } = pg;
 /** @typedef {{ optionId: string, answeredAt: number }} Answer */
 /** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, heartbeat: NodeJS.Timeout }} Client */
 /** @typedef {{ id: string, email: string, passwordHash: string }} Presenter */
-/** @typedef {{ pin: string, title: string, presenterId: string, questions: Question[], phase: Phase, currentQuestionIndex: number, players: Map<string, Player>, answers: Map<string, Answer>, scoredQuestionIndexes: Set<number>, openedAt: number | null, clients: Map<string, Client>, createdAt: number }} Session */
+/** @typedef {{ pin: string, title: string, presenterId: string, questions: Question[], phase: Phase, currentQuestionIndex: number, players: Map<string, Player>, answers: Map<string, Answer>, scoredQuestionIndexes: Set<number>, openedAt: number | null, clients: Map<string, Client>, endedReason: string | null, createdAt: number }} Session */
 
 const staticRoutes = new Map([
   ["/", { path: new URL("./public/index.html", import.meta.url), type: "text/html; charset=utf-8" }],
@@ -170,6 +172,7 @@ async function handleCreateSession(request, response) {
     scoredQuestionIndexes: new Set(),
     openedAt: null,
     clients: new Map(),
+    endedReason: null,
     createdAt: Date.now()
   };
 
@@ -224,6 +227,7 @@ async function handleSessionAction(request, response, pin, action) {
 }
 
 async function handleJoin(request, response, session) {
+  assertPresenterOnline(session);
   const body = await readJson(request);
   const nickname = limitText(readString(body.nickname, "Nickname"), MAX_NICKNAME_LENGTH, "Nickname");
   const player = {
@@ -247,6 +251,7 @@ async function handleJoin(request, response, session) {
 }
 
 async function handleResume(request, response, session) {
+  assertPresenterOnline(session);
   const body = await readJson(request);
   const playerId = readString(body.playerId, "Player ID");
 
@@ -356,6 +361,7 @@ function advanceSession(session) {
 function endSession(session) {
   session.phase = "ended";
   session.openedAt = null;
+  session.endedReason = "host_ended";
 }
 
 function resetCurrentAnswers(session) {
@@ -405,7 +411,68 @@ async function handleEventStream(request, response, url) {
   request.on("close", () => {
     clearInterval(client.heartbeat);
     session.clients.delete(client.id);
+    void handleClientDisconnect(session, client);
   });
+}
+
+async function handleClientDisconnect(session, client) {
+  if (client.role === "host") {
+    await handleHostDisconnect(session);
+    return;
+  }
+
+  if (client.playerId) {
+    await handlePlayerDisconnect(session, client.playerId);
+  }
+}
+
+async function handleHostDisconnect(session) {
+  await wait(HOST_DISCONNECT_GRACE_MS);
+
+  if (session.phase === "ended" || hasConnectedHost(session)) {
+    return;
+  }
+
+  session.phase = "ended";
+  session.endedReason = "presenter_left";
+  session.openedAt = null;
+  await persistSession(session);
+  broadcastState(session);
+}
+
+async function handlePlayerDisconnect(session, playerId) {
+  await wait(PLAYER_DISCONNECT_GRACE_MS);
+
+  if (hasConnectedPlayer(session, playerId)) {
+    return;
+  }
+
+  const removed = session.players.delete(playerId);
+  session.answers.delete(playerId);
+  if (!removed) {
+    return;
+  }
+
+  await persistSession(session);
+  broadcastState(session);
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function hasConnectedHost(session) {
+  return [...session.clients.values()].some((client) => client.role === "host");
+}
+
+function hasConnectedPlayer(session, playerId) {
+  return [...session.clients.values()].some((client) => client.role === "player" && client.playerId === playerId);
+}
+
+function assertPresenterOnline(session) {
+  if (session.phase === "ended" || !hasConnectedHost(session)) {
+    throw new HttpError(409, "Presenter is not online.");
+  }
 }
 
 function broadcastState(session) {
@@ -438,6 +505,7 @@ function getStateForRole(session, role, playerId) {
     recentPlayers: role === "host" ? buildRecentPlayers(session) : [],
     me: player ? { id: player.id, nickname: player.nickname, score: player.score } : null,
     selectedOptionId: playerId ? session.answers.get(playerId)?.optionId ?? null : null,
+    endedReason: session.endedReason,
     mediaLimitBytes: MAX_MEDIA_BYTES
   };
 }
@@ -903,6 +971,7 @@ function serializeSessionSnapshot(session) {
     answers: [...session.answers.entries()],
     scoredQuestionIndexes: [...session.scoredQuestionIndexes],
     openedAt: session.openedAt,
+    endedReason: session.endedReason,
     createdAt: session.createdAt
   };
 }
@@ -920,6 +989,7 @@ function hydrateSessionSnapshot(snapshot, clients) {
     scoredQuestionIndexes: new Set(snapshot.scoredQuestionIndexes ?? []),
     openedAt: snapshot.openedAt ?? null,
     clients,
+    endedReason: snapshot.endedReason ?? null,
     createdAt: snapshot.createdAt ?? Date.now()
   };
 }
