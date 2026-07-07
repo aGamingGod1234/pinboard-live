@@ -110,8 +110,7 @@ label {
   background: #180044;
 }
 
-.topbar,
-.creator-topline {
+.topbar {
   position: sticky;
   top: 0;
   z-index: 5;
@@ -187,6 +186,15 @@ label {
   z-index: 30;
   width: min(680px, calc(100vw - 28px));
   transform: translateX(-50%);
+}
+
+.stage-view > .error {
+  border: 2px solid rgba(255, 255, 255, 0.34);
+  background: #030303;
+  color: #fff;
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  font-weight: 950;
+  text-align: center;
 }
 
 .panel,
@@ -270,31 +278,39 @@ label {
 
 .shader-screen::before {
   background:
-    radial-gradient(55% 70% at 80% 12%, rgba(255, 255, 255, 0.16), transparent 64%),
-    radial-gradient(58% 80% at 14% 58%, rgba(255, 255, 255, 0.09), transparent 62%),
+    radial-gradient(55% 70% at 80% 12%, var(--shader-glow-a, rgba(255, 255, 255, 0.16)), transparent 64%),
+    radial-gradient(58% 80% at 14% 58%, var(--shader-glow-b, rgba(255, 255, 255, 0.09)), transparent 62%),
     linear-gradient(120deg, var(--shader-a), var(--shader-b) 52%, var(--shader-c));
   animation: shader-drift 16s ease-in-out infinite alternate;
 }
 
 .shader-screen::after {
   background:
-    radial-gradient(60% 76% at 96% 12%, rgba(255, 255, 255, 0.16), transparent 58%),
-    linear-gradient(72deg, transparent 15%, rgba(4, 0, 54, 0.28) 16% 36%, transparent 37%),
+    radial-gradient(60% 76% at 96% 12%, var(--shader-glow-c, rgba(255, 255, 255, 0.16)), transparent 58%),
+    linear-gradient(72deg, transparent 15%, var(--shader-slab, rgba(4, 0, 54, 0.28)) 16% 36%, transparent 37%),
     radial-gradient(82% 110% at 54% 118%, rgba(0, 0, 0, 0.22), transparent 62%);
   mix-blend-mode: soft-light;
   animation: shader-sweep 19s ease-in-out infinite alternate;
 }
 
 .shader-purple {
-  --shader-a: #2b0068;
-  --shader-b: #7d0ee7;
-  --shader-c: #3b006f;
+  --shader-a: #925ed6;
+  --shader-b: #910aff;
+  --shader-c: #af38ff;
+  --shader-glow-a: rgba(175, 56, 255, 0.5);
+  --shader-glow-b: rgba(146, 94, 214, 0.42);
+  --shader-glow-c: rgba(255, 255, 255, 0.18);
+  --shader-slab: rgba(58, 0, 104, 0.34);
 }
 
 .shader-blue {
-  --shader-a: #061fc5;
-  --shader-b: #008fe6;
-  --shader-c: #1d00b8;
+  --shader-a: #000000;
+  --shader-b: #3a2c00;
+  --shader-c: #172000;
+  --shader-glow-a: rgba(255, 179, 0, 0.54);
+  --shader-glow-b: rgba(212, 255, 0, 0.24);
+  --shader-glow-c: rgba(255, 187, 0, 0.42);
+  --shader-slab: rgba(255, 187, 0, 0.16);
 }
 
 .shader-question {
@@ -304,21 +320,33 @@ label {
 }
 
 .shader-live-host {
-  --shader-a: #071a62;
-  --shader-b: #0877d8;
-  --shader-c: #24178f;
+  --shader-a: #020202;
+  --shader-b: #4d3600;
+  --shader-c: #253000;
+  --shader-glow-a: rgba(255, 187, 0, 0.4);
+  --shader-glow-b: rgba(212, 255, 0, 0.18);
+  --shader-glow-c: rgba(255, 179, 0, 0.32);
+  --shader-slab: rgba(255, 187, 0, 0.13);
 }
 
 .shader-waiting {
-  --shader-a: #09286e;
-  --shader-b: #08a8d6;
-  --shader-c: #4320a6;
+  --shader-a: #030303;
+  --shader-b: #5a4200;
+  --shader-c: #293600;
+  --shader-glow-a: rgba(255, 179, 0, 0.48);
+  --shader-glow-b: rgba(212, 255, 0, 0.2);
+  --shader-glow-c: rgba(255, 187, 0, 0.34);
+  --shader-slab: rgba(212, 255, 0, 0.12);
 }
 
 .shader-player {
-  --shader-a: #351178;
-  --shader-b: #0a64d9;
-  --shader-c: #160035;
+  --shader-a: #020202;
+  --shader-b: #654500;
+  --shader-c: #1d2900;
+  --shader-glow-a: rgba(255, 187, 0, 0.36);
+  --shader-glow-b: rgba(212, 255, 0, 0.16);
+  --shader-glow-c: rgba(255, 179, 0, 0.28);
+  --shader-slab: rgba(255, 187, 0, 0.12);
 }
 
 .screen-action-row {
@@ -464,9 +492,11 @@ label {
 
 .creator-shell {
   display: grid;
-  width: min(1760px, calc(100vw - (var(--page-gutter) * 2)));
+  width: 100%;
+  min-height: calc(100dvh - 136px);
   margin: 0 auto;
-  padding: clamp(16px, 2.2vw, 28px) 0 48px;
+  overflow: hidden;
+  padding: 0 0 12px;
   grid-template-columns: minmax(190px, 250px) minmax(0, 1fr) minmax(230px, 310px);
   gap: clamp(12px, 1.8vw, 22px);
   align-items: start;
@@ -476,32 +506,53 @@ label {
 .creator-inspector {
   position: sticky;
   top: 82px;
+  max-height: calc(100dvh - 104px);
+  overflow: auto;
+}
+
+.creator-rail {
+  border-color: rgba(255, 179, 0, 0.58);
+  background:
+    linear-gradient(180deg, rgba(255, 179, 0, 0.12), rgba(255, 255, 255, 0.96) 34%),
+    #fff;
+  box-shadow: 0 0 0 3px rgba(255, 179, 0, 0.12), 0 18px 42px rgba(92, 63, 0, 0.12);
 }
 
 .question-strip {
   display: grid;
+  max-height: calc(100dvh - 220px);
+  overflow: auto;
+  padding-right: 2px;
   gap: 10px;
 }
 
 .question-mini {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
-  gap: 8px;
+  width: 100%;
+  grid-template-columns: 50px minmax(0, 1fr);
+  gap: 10px;
+  appearance: none;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #f9faf8;
   padding: 10px;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
 }
 
-.question-mini span {
+.question-mini-icon {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 46px;
+  height: 46px;
   place-items: center;
-  border-radius: 6px;
+  align-self: center;
+  border-radius: 10px;
   background: var(--ink);
   color: #fff;
+  font-size: 1.2rem;
   font-weight: 900;
+  box-shadow: inset 0 -4px rgba(0, 0, 0, 0.16);
 }
 
 .question-mini strong,
@@ -518,9 +569,28 @@ label {
   font-weight: 800;
 }
 
+.question-mini.is-active {
+  border-color: #ffb300;
+  background: linear-gradient(180deg, #fffaf0, #ffffff);
+  box-shadow: 0 10px 28px rgba(92, 63, 0, 0.16);
+}
+
+.question-mini.is-active .question-mini-icon {
+  background: linear-gradient(145deg, #ffb300, #d4ff00);
+  color: #151100;
+  transform: scale(1.04);
+}
+
 .creator-main,
 .creator-main > * {
   min-width: 0;
+}
+
+.creator-main {
+  max-height: calc(100dvh - 104px);
+  overflow-y: auto;
+  padding: 0 4px clamp(360px, 52dvh, 760px);
+  scroll-padding-top: 0;
 }
 
 .deck-panel,
@@ -542,6 +612,11 @@ label {
   gap: 14px;
   padding: clamp(14px, 2vw, 22px);
   box-shadow: 0 12px 32px rgba(17, 19, 26, 0.06);
+}
+
+.creator-question.is-active {
+  outline: 2px solid rgba(255, 179, 0, 0.56);
+  outline-offset: 3px;
 }
 
 .question-head {
@@ -1284,15 +1359,27 @@ label {
 
 @media (max-width: 1180px) {
   .creator-shell {
+    min-height: 0;
+    overflow: visible;
     grid-template-columns: minmax(0, 1fr) minmax(230px, 310px);
   }
 
   .creator-rail {
     position: static;
     grid-column: 1 / -1;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .creator-main {
+    max-height: none;
+    overflow: visible;
+    padding: 0;
   }
 
   .question-strip {
+    max-height: none;
+    overflow: visible;
     grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   }
 
@@ -1345,7 +1432,6 @@ label {
 
 @media (max-width: 900px) {
   .topbar,
-  .creator-topline,
   .stage-bar {
     align-items: flex-start;
     flex-direction: column;
@@ -1358,6 +1444,8 @@ label {
 
   .creator-inspector {
     position: static;
+    max-height: none;
+    overflow: visible;
   }
 
   .question-head {

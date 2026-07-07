@@ -1,6 +1,8 @@
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 const DEFAULT_POINTS = 1000;
 const DEFAULT_OPTIONS = ["Red", "Blue", "Gold", "Green"];
+const TRUE_FALSE_OPTIONS = ["True", "False"];
+const QUESTION_KINDS = ["quiz", "true_false", "slide"];
 const OPTION_TONES = ["red", "blue", "gold", "green", "purple", "teal"];
 const OPTION_SHAPES = ["triangle", "diamond", "circle", "square", "star", "hexagon"];
 const LIVE_RECONNECT_NOTICE = "Live connection is retrying.";
@@ -23,11 +25,13 @@ const state = {
   remote: null,
   restoreKey: "",
   draft: createDraft(),
+  activeQuestionId: "",
   eventSource: null,
   error: "",
   notice: ""
 };
 
+state.activeQuestionId = state.draft.questions[0]?.id ?? "";
 render();
 void restorePlayerIfPossible();
 
@@ -76,7 +80,7 @@ document.addEventListener("submit", async (event) => {
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
-  if (!button || button.tagName !== "BUTTON") {
+  if (!button) {
     return;
   }
 
@@ -88,6 +92,7 @@ document.addEventListener("click", async (event) => {
     if (action === "go-presenter") setMode("presenter");
     if (action === "go-player") setMode("player");
     if (action === "add-question") addQuestion();
+    if (action === "select-question") selectQuestion(button.dataset.questionId);
     if (action === "remove-question") removeQuestion(button.dataset.questionId);
     if (action === "copy-link") await copyJoinLink();
     if (action === "reset-deck") resetDeck();
@@ -143,6 +148,8 @@ function render() {
 
   if (isImmersive) {
     requestAnimationFrame(() => window.scrollTo(0, 0));
+  } else if (state.mode === "presenter" && state.hostToken && !state.session) {
+    requestAnimationFrame(syncCreatorScrollTracking);
   }
 }
 
@@ -234,16 +241,6 @@ function renderPresenterLogin() {
 function renderCreator() {
   return `
     <section class="creator-page">
-      <div class="creator-topline">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-          <span>Pinboard Live</span>
-        </div>
-        <div class="nav-actions">
-          <button class="ghost" type="button" data-action="go-player">Join</button>
-          <button type="button" data-action="go-home">Preview join</button>
-        </div>
-      </div>
       <form class="creator-shell" data-action="create-session">
         <aside class="creator-rail panel">
           <div class="panel-header">
@@ -252,15 +249,15 @@ function renderCreator() {
           </div>
           <div class="question-strip">
             ${state.draft.questions.map((question, index) => `
-              <article class="question-mini">
-                <span>${index + 1}</span>
+              <button class="question-mini ${question.id === state.activeQuestionId ? "is-active" : ""}" type="button" data-action="select-question" data-question-id="${question.id}" data-question-mini="${question.id}" aria-current="${question.id === state.activeQuestionId ? "true" : "false"}">
+                <span class="question-mini-icon">${index + 1}</span>
                 <strong>${escapeHtml(question.text || "Untitled item")}</strong>
                 <small>${escapeHtml(getQuestionTypeLabel(question.kind))}</small>
-              </article>
+              </button>
             `).join("")}
           </div>
         </aside>
-        <div class="creator-main stack">
+        <div class="creator-main stack" data-creator-main>
           <div class="panel deck-panel">
             <label>Deck title <input data-field="deckTitle" maxlength="120" value="${escapeHtml(state.draft.title)}" /></label>
           </div>
@@ -284,15 +281,14 @@ function renderCreator() {
 
 function renderQuestionEditor(question, index) {
   const isSlide = question.kind === "slide";
-  const isPoll = question.kind === "poll";
 
   return `
-    <article class="question-card creator-question">
+    <article class="question-card creator-question ${question.id === state.activeQuestionId ? "is-active" : ""}" data-question-card="${question.id}">
       <div class="question-head">
         <label class="question-field question-field-type">Type
           <select data-field="questionKind" data-question-id="${question.id}">
             ${renderSelectOption("quiz", "Quiz", question.kind)}
-            ${renderSelectOption("poll", "Poll", question.kind)}
+            ${renderSelectOption("true_false", "True or false", question.kind)}
             ${renderSelectOption("slide", "Slide", question.kind)}
           </select>
         </label>
@@ -300,7 +296,7 @@ function renderQuestionEditor(question, index) {
           <textarea data-field="questionText" data-question-id="${question.id}" maxlength="500">${escapeHtml(question.text)}</textarea>
         </label>
         <label class="question-field question-field-points">Points
-          <input type="number" min="0" max="1000000" step="100" ${isSlide || isPoll ? "disabled" : ""} data-field="points" data-question-id="${question.id}" value="${question.points}" />
+          <input type="number" min="0" max="1000000" step="100" ${isSlide ? "disabled" : ""} data-field="points" data-question-id="${question.id}" value="${question.points}" />
         </label>
         <button type="button" class="ghost remove-question" data-action="remove-question" data-question-id="${question.id}" ${state.draft.questions.length === 1 ? "disabled" : ""}>Remove</button>
       </div>
@@ -308,18 +304,18 @@ function renderQuestionEditor(question, index) {
         <input type="file" accept="image/*,video/*" data-field="media" data-question-id="${question.id}" />
       </label>
       ${question.media ? `<p class="muted">${escapeHtml(question.media.name)} - ${formatBytes(question.media.size)}</p>` : ""}
-      ${isSlide ? "" : renderOptionEditor(question, isPoll)}
+      ${isSlide ? "" : renderOptionEditor(question)}
       <p class="muted">Item ${index + 1} of ${state.draft.questions.length}</p>
     </article>
   `;
 }
 
-function renderOptionEditor(question, isPoll) {
+function renderOptionEditor(question) {
   return `
     <div class="option-list">
       ${question.options.map((option, index) => `
         <div class="option-row" data-tone="${OPTION_TONES[index] ?? "red"}">
-          <input type="radio" name="correct-${question.id}" data-field="correctOption" data-question-id="${question.id}" value="${option.id}" ${option.id === question.correctOptionId ? "checked" : ""} ${isPoll ? "disabled" : ""} aria-label="Correct answer" />
+          <input type="radio" name="correct-${question.id}" data-field="correctOption" data-question-id="${question.id}" value="${option.id}" ${option.id === question.correctOptionId ? "checked" : ""} aria-label="Correct answer" />
           <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
           <input data-field="optionText" data-question-id="${question.id}" data-option-id="${option.id}" maxlength="140" value="${escapeHtml(option.text)}" />
         </div>
@@ -616,9 +612,9 @@ async function createSession() {
     questions: state.draft.questions.map((question) => ({
       kind: question.kind,
       text: question.text,
-      points: Number(question.points),
+      points: question.kind === "slide" ? 0 : Number(question.points),
       options: question.kind === "slide" ? [] : question.options,
-      correctOptionId: question.kind === "quiz" ? question.correctOptionId : null,
+      correctOptionId: isScoredQuestionKind(question.kind) ? question.correctOptionId : null,
       media: question.media
     }))
   };
@@ -770,8 +766,7 @@ function updateFromInput(target) {
   }
 
   if (field === "questionKind") {
-    question.kind = target.value;
-    if (question.kind !== "quiz") question.points = 0;
+    applyQuestionKind(question, target.value);
   }
   if (field === "questionText") question.text = target.value;
   if (field === "points") question.points = Number(target.value);
@@ -815,14 +810,20 @@ function readFileAsDataUrl(file) {
 }
 
 function addQuestion() {
-  state.draft.questions.push(createQuestion());
+  const question = createQuestion();
+  state.draft.questions.push(question);
+  state.activeQuestionId = question.id;
   render();
+  requestAnimationFrame(() => selectQuestion(question.id));
 }
 
 function removeQuestion(questionId) {
   state.draft.questions = state.draft.questions.filter((question) => question.id !== questionId);
   if (state.draft.questions.length === 0) {
     state.draft.questions.push(createQuestion());
+  }
+  if (!findQuestion(state.activeQuestionId)) {
+    state.activeQuestionId = state.draft.questions[0]?.id ?? "";
   }
   render();
 }
@@ -831,6 +832,7 @@ function resetDeck() {
   state.session = null;
   state.remote = null;
   state.draft = createDraft();
+  state.activeQuestionId = state.draft.questions[0]?.id ?? "";
   if (state.eventSource) {
     state.eventSource.close();
     state.eventSource = null;
@@ -861,7 +863,7 @@ function createDraft() {
 }
 
 function createQuestion() {
-  const options = DEFAULT_OPTIONS.map((text) => ({ id: crypto.randomUUID(), text }));
+  const options = createOptions(DEFAULT_OPTIONS);
   return {
     id: crypto.randomUUID(),
     kind: "quiz",
@@ -873,8 +875,117 @@ function createQuestion() {
   };
 }
 
+function createOptions(labels) {
+  return labels.map((text) => ({ id: crypto.randomUUID(), text }));
+}
+
+function applyQuestionKind(question, kind) {
+  if (!QUESTION_KINDS.includes(kind) || question.kind === kind) {
+    return;
+  }
+
+  question.kind = kind;
+
+  if (kind === "slide") {
+    question.points = 0;
+    question.correctOptionId = null;
+    return;
+  }
+
+  if (kind === "true_false") {
+    question.options = createOptions(TRUE_FALSE_OPTIONS);
+    question.correctOptionId = question.options[0].id;
+    question.points = question.points > 0 ? question.points : DEFAULT_POINTS;
+    return;
+  }
+
+  if (question.options.length < 3 || isTrueFalseOptionSet(question.options)) {
+    question.options = createOptions(DEFAULT_OPTIONS);
+  }
+
+  question.points = question.points > 0 ? question.points : DEFAULT_POINTS;
+  if (!question.options.some((option) => option.id === question.correctOptionId)) {
+    question.correctOptionId = question.options[0]?.id ?? null;
+  }
+}
+
+function isTrueFalseOptionSet(options) {
+  return options.length === TRUE_FALSE_OPTIONS.length && options.every((option, index) => option.text === TRUE_FALSE_OPTIONS[index]);
+}
+
 function findQuestion(questionId) {
   return state.draft.questions.find((question) => question.id === questionId);
+}
+
+function selectQuestion(questionId) {
+  const question = findQuestion(questionId);
+  if (!question) {
+    return;
+  }
+
+  setActiveQuestionId(question.id);
+  requestAnimationFrame(() => {
+    const main = document.querySelector("[data-creator-main]");
+    const card = document.querySelector(`[data-question-card="${CSS.escape(question.id)}"]`);
+    if (!(main instanceof HTMLElement) || !(card instanceof HTMLElement)) {
+      return;
+    }
+
+    main.scrollTo({ top: Math.max(0, card.offsetTop - main.offsetTop), behavior: "auto" });
+    updateCreatorSelection();
+  });
+}
+
+function syncCreatorScrollTracking() {
+  const main = document.querySelector("[data-creator-main]");
+  if (!(main instanceof HTMLElement)) {
+    return;
+  }
+
+  main.onscroll = updateActiveQuestionFromScroll;
+  updateCreatorSelection();
+}
+
+function updateActiveQuestionFromScroll() {
+  const main = document.querySelector("[data-creator-main]");
+  const cards = [...document.querySelectorAll("[data-question-card]")];
+  if (!(main instanceof HTMLElement) || cards.length === 0) {
+    return;
+  }
+
+  const mainTop = main.getBoundingClientRect().top;
+  const closest = cards.reduce((best, card) => {
+    if (!(card instanceof HTMLElement)) {
+      return best;
+    }
+    const rect = card.getBoundingClientRect();
+    const distance = Math.abs(rect.top - mainTop);
+    return !best || distance < best.distance ? { id: card.dataset.questionCard, distance } : best;
+  }, null);
+
+  setActiveQuestionId(closest?.id ?? "");
+}
+
+function setActiveQuestionId(questionId) {
+  if (!questionId || state.activeQuestionId === questionId) {
+    updateCreatorSelection();
+    return;
+  }
+
+  state.activeQuestionId = questionId;
+  updateCreatorSelection();
+}
+
+function updateCreatorSelection() {
+  for (const mini of document.querySelectorAll("[data-question-mini]")) {
+    const isActive = mini.dataset.questionMini === state.activeQuestionId;
+    mini.classList.toggle("is-active", isActive);
+    mini.setAttribute("aria-current", isActive ? "true" : "false");
+  }
+
+  for (const card of document.querySelectorAll("[data-question-card]")) {
+    card.classList.toggle("is-active", card.dataset.questionCard === state.activeQuestionId);
+  }
 }
 
 function getInitialMode() {
@@ -926,7 +1037,7 @@ function formatProgress(remote) {
 }
 
 function formatQuestionLabel(question, remote) {
-  const type = question.kind === "quiz" ? `${question.points} points` : question.kind;
+  const type = question.kind === "slide" ? "Slide" : `${question.points} points`;
   return `${formatProgress(remote)} - ${type}`;
 }
 
@@ -937,10 +1048,14 @@ function formatPin(pin) {
 function getQuestionTypeLabel(kind) {
   const labels = {
     quiz: "Quiz",
-    poll: "Poll",
+    true_false: "True or false",
     slide: "Slide"
   };
   return labels[kind] ?? kind;
+}
+
+function isScoredQuestionKind(kind) {
+  return kind === "quiz" || kind === "true_false";
 }
 
 function formatBytes(bytes) {

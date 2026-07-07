@@ -42,7 +42,7 @@ const scryptAsync = promisify(scrypt);
 const { Pool } = pg;
 
 /** @typedef {"lobby" | "question" | "answering" | "results" | "ended"} Phase */
-/** @typedef {"quiz" | "poll" | "slide"} QuestionKind */
+/** @typedef {"quiz" | "true_false" | "slide"} QuestionKind */
 /** @typedef {{ id: string, text: string }} Option */
 /** @typedef {{ name: string, type: string, size: number, dataUrl: string }} MediaAsset */
 /** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, options: Option[], correctOptionId: string | null, media: MediaAsset | null }} Question */
@@ -364,7 +364,7 @@ function resetCurrentAnswers(session) {
 }
 
 function scoreCurrentQuestion(session, question) {
-  if (session.scoredQuestionIndexes.has(session.currentQuestionIndex) || question.kind !== "quiz") {
+  if (session.scoredQuestionIndexes.has(session.currentQuestionIndex) || !isScoredQuestionKind(question.kind)) {
     return;
   }
 
@@ -555,10 +555,14 @@ function normalizeQuestion(input, index) {
   }
 
   const options = normalizeOptions(input.options);
-  const points = kind === "poll" ? 0 : normalizePoints(input.points);
-  const correctOptionId = kind === "poll" ? null : readString(input.correctOptionId, `Item ${index + 1} correct option`);
+  const points = normalizePoints(input.points);
+  const correctOptionId = readString(input.correctOptionId, `Item ${index + 1} correct option`);
 
-  if (kind === "quiz" && !options.some((option) => option.id === correctOptionId)) {
+  if (kind === "true_false" && options.length !== 2) {
+    throw new HttpError(400, `Item ${index + 1} true or false questions need exactly 2 options.`);
+  }
+
+  if (!options.some((option) => option.id === correctOptionId)) {
     throw new HttpError(400, `Item ${index + 1} needs a valid correct option.`);
   }
 
@@ -574,10 +578,14 @@ function normalizeQuestion(input, index) {
 }
 
 function normalizeQuestionKind(value) {
-  if (value === "quiz" || value === "poll" || value === "slide") {
+  if (value === "quiz" || value === "true_false" || value === "slide") {
     return value;
   }
-  throw new HttpError(400, "Item type must be quiz, poll, or slide.");
+  throw new HttpError(400, "Item type must be quiz, true or false, or slide.");
+}
+
+function isScoredQuestionKind(kind) {
+  return kind === "quiz" || kind === "true_false";
 }
 
 function normalizeOptions(input) {

@@ -1,3 +1,31 @@
+## [2026-07-07] - Shader UI and creator navigation pass
+
+### What Was Implemented
+- Reworked the home join surface to use the provided purple ShaderGradient color set as a CSS shader-style background.
+- Made the invalid PIN warning use a black, high-contrast banner with white text on immersive screens.
+- Removed the duplicate creator header row that contained the inner brand, Join, and Preview join controls.
+- Changed creator question types to `quiz`, `true_false`, and `slide`; removed `poll` from client and server validation.
+- Added true/false option handling and scoring as a first-class scored question type.
+- Added active creator sidebar items, click-to-jump question navigation, and scroll tracking for the question closest to the top of the editor.
+- Recolored lobby, presenter live, waiting, and player selection surfaces with the provided black/gold/lime ShaderGradient color family.
+
+### Files Modified
+- `public/app.js` - creator navigation state, true/false editor behavior, live session payload changes, and sidebar scroll tracking.
+- `public/styles.css` - shader palettes, black invalid PIN banner, creator rail highlight, adaptive center-column scrolling, and responsive fallbacks.
+- `server.mjs` - true/false validation/scoring and poll removal.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- The ShaderGradient snippets should be implemented as dependency-free CSS shader approximations in this vanilla app rather than adding a React/Three shader package.
+- On narrower desktop portrait layouts, natural page scrolling is preferable to trapping the editor in a short internal scroll area.
+
+### Known Issues / Deferred
+- The app still does not have a committed automated visual regression suite.
+- The podium/result screens are still the existing simplified implementation; this pass focused on the requested backgrounds, creator UX, question types, and live/player selection styling.
+
+### Suggested Next Steps
+- Add a small production smoke test script for the exact portrait and landscape dimensions from the screenshots.
+
 ## [2026-07-06] - Kahoot-inspired shader UI rebuild
 
 ### What Was Implemented
