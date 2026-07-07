@@ -19,6 +19,14 @@ Password: local-presenter-password
 
 Set `PRESENTER_EMAIL`, `PRESENTER_PASSWORD`, and `AUTH_SECRET` to change this. Set `DATABASE_URL` to persist presenter accounts in PostgreSQL.
 
+Google presenter login:
+
+```text
+GOOGLE_CLIENT_ID=...
+```
+
+Create or select a Google Web client ID, add the app origin to Authorized JavaScript origins, and set `GOOGLE_CLIENT_ID`. The presenter login uses Google Identity Services and the server verifies the returned Google ID token before issuing the existing presenter token.
+
 ## Current Architecture
 
 - One Node.js server serves the app and owns in-memory session state.

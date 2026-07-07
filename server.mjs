@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { createHmac, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
+import { createHmac, createPublicKey, randomBytes, randomUUID, scrypt, timingSafeEqual, verify } from "node:crypto";
 import { promisify } from "node:util";
 import pg from "pg";
 
@@ -32,6 +32,10 @@ const PASSWORD_SALT_BYTES = 16;
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const HOST_DISCONNECT_GRACE_MS = 3000;
 const PLAYER_DISCONNECT_GRACE_MS = 2000;
+const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
+const GOOGLE_TOKEN_MAX_LENGTH = 4096;
+const GOOGLE_JWKS_DEFAULT_TTL_MS = 60 * 60 * 1000;
+const GOOGLE_ISSUERS = new Set(["accounts.google.com", "https://accounts.google.com"]);
 
 const PORT = Number(process.env.PORT ?? DEFAULT_PORT);
 const HOST = process.env.HOST ?? DEFAULT_HOST;
@@ -40,6 +44,9 @@ const AUTH_SECRET = process.env.AUTH_SECRET ?? (IS_PRODUCTION ? "" : DEFAULT_LOC
 const BOOTSTRAP_PRESENTER_EMAIL = normalizeEmail(process.env.PRESENTER_EMAIL ?? (IS_PRODUCTION ? "" : DEFAULT_LOCAL_PRESENTER_EMAIL));
 const BOOTSTRAP_PRESENTER_PASSWORD = process.env.PRESENTER_PASSWORD ?? (IS_PRODUCTION ? "" : DEFAULT_LOCAL_PRESENTER_PASSWORD);
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? "";
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ?? "";
 const scryptAsync = promisify(scrypt);
 const { Pool } = pg;
 
@@ -66,6 +73,8 @@ const database = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL }) : n
 const localPresentersByEmail = new Map();
 /** @type {Map<string, Session>} */
 const sessions = new Map();
+/** @type {{ expiresAt: number, keys: Map<string, JsonWebKey> }} */
+const googleJwksCache = { expiresAt: 0, keys: new Map() };
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -112,8 +121,30 @@ async function routeRequest(request, response) {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/auth/google") {
+    await handleGoogleAuthStart(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/auth/google/callback") {
+    await handleGoogleAuthCallback(request, response, url);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/auth") {
     await handleAuth(request, response);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/auth/google") {
+    await handleGoogleCredentialAuth(request, response);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/config") {
+    sendJson(response, 200, {
+      googleClientId: GOOGLE_CLIENT_ID
+    });
     return;
   }
 
@@ -145,6 +176,65 @@ async function handleAuth(request, response) {
   if (!presenter || !(await verifyPassword(password, presenter.passwordHash))) {
     throw new HttpError(401, "Email or password is not valid.");
   }
+
+  sendJson(response, 200, {
+    hostToken: signPresenterToken(presenter),
+    presenter: { email: presenter.email }
+  });
+}
+
+async function handleGoogleAuthStart(request, response) {
+  assertGoogleOAuthConfigured();
+  const state = randomBytes(24).toString("base64url");
+  const redirectUri = getGoogleRedirectUri(request);
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: "openid email profile",
+    access_type: "offline",
+    prompt: "select_account",
+    state
+  });
+
+  setCookie(response, "pinboard_oauth_state", state, { maxAge: 600 });
+  response.writeHead(302, { Location: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` });
+  response.end();
+}
+
+async function handleGoogleAuthCallback(request, response, url) {
+  assertGoogleOAuthConfigured();
+  const expectedState = readCookies(request).pinboard_oauth_state;
+  const state = url.searchParams.get("state") ?? "";
+  const code = url.searchParams.get("code") ?? "";
+  const error = url.searchParams.get("error");
+
+  clearCookie(response, "pinboard_oauth_state");
+
+  if (error) {
+    throw new HttpError(400, `Google sign-in failed: ${error}`);
+  }
+
+  if (!code || !expectedState || state !== expectedState) {
+    throw new HttpError(400, "Google sign-in state is not valid.");
+  }
+
+  const token = await exchangeGoogleCode(request, code);
+  const profile = await fetchGoogleProfile(token.access_token);
+  if (!profile.email_verified) {
+    throw new HttpError(403, "Google email must be verified.");
+  }
+
+  const presenter = await findOrCreateGooglePresenter(profile.email);
+  sendGoogleLoginSuccess(response, signPresenterToken(presenter));
+}
+
+async function handleGoogleCredentialAuth(request, response) {
+  assertGoogleClientIdConfigured();
+  const body = await readJson(request);
+  const credential = readString(body.credential, "Google credential");
+  const profile = await verifyGoogleCredentialToken(credential);
+  const presenter = await findOrCreateGooglePresenter(profile.email);
 
   sendJson(response, 200, {
     hostToken: signPresenterToken(presenter),
@@ -777,8 +867,8 @@ function validateStartupConfig() {
     throw new Error("AUTH_SECRET is required in production.");
   }
 
-  if (!BOOTSTRAP_PRESENTER_EMAIL || !BOOTSTRAP_PRESENTER_PASSWORD) {
-    throw new Error("PRESENTER_EMAIL and PRESENTER_PASSWORD are required in production.");
+  if ((!BOOTSTRAP_PRESENTER_EMAIL || !BOOTSTRAP_PRESENTER_PASSWORD) && !GOOGLE_CLIENT_ID) {
+    throw new Error("Configure either PRESENTER_EMAIL/PRESENTER_PASSWORD or GOOGLE_CLIENT_ID.");
   }
 }
 
@@ -806,6 +896,10 @@ async function initializeDatabase() {
 }
 
 async function bootstrapPresenter() {
+  if (!BOOTSTRAP_PRESENTER_EMAIL || !BOOTSTRAP_PRESENTER_PASSWORD) {
+    return;
+  }
+
   const passwordHash = await createPasswordHash(BOOTSTRAP_PRESENTER_PASSWORD);
 
   if (!database) {
@@ -838,6 +932,192 @@ async function findPresenterByEmail(email) {
     [email]
   );
   return result.rows[0] ?? null;
+}
+
+async function findOrCreateGooglePresenter(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const existing = await findPresenterByEmail(normalizedEmail);
+  if (existing) {
+    return existing;
+  }
+
+  const presenter = {
+    id: randomUUID(),
+    email: normalizedEmail,
+    passwordHash: await createPasswordHash(randomBytes(32).toString("base64url"))
+  };
+
+  if (!database) {
+    localPresentersByEmail.set(normalizedEmail, presenter);
+    return presenter;
+  }
+
+  const result = await database.query(
+    `
+      INSERT INTO presenters (id, email, password_hash)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (email)
+      DO UPDATE SET updated_at = NOW()
+      RETURNING id, email, password_hash AS "passwordHash"
+    `,
+    [presenter.id, presenter.email, presenter.passwordHash]
+  );
+  return result.rows[0];
+}
+
+function assertGoogleOAuthConfigured() {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    throw new HttpError(503, "Google OAuth is not configured yet.");
+  }
+}
+
+function assertGoogleClientIdConfigured() {
+  if (!GOOGLE_CLIENT_ID) {
+    throw new HttpError(503, "Google sign-in is not configured yet.");
+  }
+}
+
+function getGoogleRedirectUri(request) {
+  if (GOOGLE_REDIRECT_URI) {
+    return GOOGLE_REDIRECT_URI;
+  }
+  const proto = request.headers["x-forwarded-proto"] ?? "http";
+  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
+  return `${proto}://${host}/auth/google/callback`;
+}
+
+async function exchangeGoogleCode(request, code) {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      redirect_uri: getGoogleRedirectUri(request),
+      grant_type: "authorization_code"
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || typeof payload.access_token !== "string") {
+    throw new HttpError(502, "Google token exchange failed.");
+  }
+  return payload;
+}
+
+async function fetchGoogleProfile(accessToken) {
+  const response = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || typeof payload.email !== "string") {
+    throw new HttpError(502, "Google profile lookup failed.");
+  }
+  return {
+    email: payload.email,
+    email_verified: payload.email_verified === true || payload.email_verified === "true"
+  };
+}
+
+async function verifyGoogleCredentialToken(credential) {
+  if (credential.length > GOOGLE_TOKEN_MAX_LENGTH) {
+    throw new HttpError(400, "Google credential is too large.");
+  }
+
+  const parts = credential.split(".");
+  if (parts.length !== 3) {
+    throw new HttpError(401, "Google credential is not valid.");
+  }
+
+  const [encodedHeader, encodedPayload, encodedSignature] = parts;
+  const header = parseBase64UrlJson(encodedHeader, "Google credential header");
+  const payload = parseBase64UrlJson(encodedPayload, "Google credential payload");
+
+  if (header.alg !== "RS256" || typeof header.kid !== "string") {
+    throw new HttpError(401, "Google credential signature is not supported.");
+  }
+
+  const jwk = await getGoogleJwk(header.kid);
+  const isValidSignature = verify(
+    "RSA-SHA256",
+    Buffer.from(`${encodedHeader}.${encodedPayload}`),
+    createPublicKey({ key: jwk, format: "jwk" }),
+    Buffer.from(encodedSignature, "base64url")
+  );
+
+  if (!isValidSignature) {
+    throw new HttpError(401, "Google credential signature is not valid.");
+  }
+
+  if (!GOOGLE_ISSUERS.has(payload.iss)) {
+    throw new HttpError(401, "Google credential issuer is not valid.");
+  }
+
+  if (payload.aud !== GOOGLE_CLIENT_ID) {
+    throw new HttpError(401, "Google credential audience is not valid.");
+  }
+
+  if (Number(payload.exp) * 1000 < Date.now()) {
+    throw new HttpError(401, "Google credential has expired.");
+  }
+
+  if (payload.email_verified !== true && payload.email_verified !== "true") {
+    throw new HttpError(403, "Google email must be verified.");
+  }
+
+  if (typeof payload.email !== "string" || !payload.email.includes("@")) {
+    throw new HttpError(401, "Google credential email is not valid.");
+  }
+
+  return { email: payload.email };
+}
+
+function parseBase64UrlJson(value, label) {
+  try {
+    return JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+  } catch {
+    throw new HttpError(401, `${label} is not valid.`);
+  }
+}
+
+async function getGoogleJwk(keyId) {
+  const now = Date.now();
+  if (googleJwksCache.expiresAt <= now || !googleJwksCache.keys.has(keyId)) {
+    await refreshGoogleJwks();
+  }
+
+  const jwk = googleJwksCache.keys.get(keyId);
+  if (!jwk) {
+    throw new HttpError(401, "Google credential key is not recognized.");
+  }
+  return jwk;
+}
+
+async function refreshGoogleJwks() {
+  const response = await fetch(GOOGLE_JWKS_URL);
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok || !Array.isArray(payload.keys)) {
+    throw new HttpError(502, "Google signing keys could not be loaded.");
+  }
+
+  const keys = new Map();
+  for (const key of payload.keys) {
+    if (typeof key.kid === "string") {
+      keys.set(key.kid, key);
+    }
+  }
+
+  googleJwksCache.keys = keys;
+  googleJwksCache.expiresAt = Date.now() + parseGoogleCacheTtl(response.headers.get("cache-control"));
+}
+
+function parseGoogleCacheTtl(cacheControl) {
+  const match = String(cacheControl ?? "").match(/max-age=(\d+)/);
+  if (!match) {
+    return GOOGLE_JWKS_DEFAULT_TTL_MS;
+  }
+  return Math.max(60_000, Number(match[1]) * 1000);
 }
 
 async function createPasswordHash(password) {
@@ -1012,6 +1292,55 @@ function hydrateSessionSnapshot(snapshot, clients) {
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
+}
+
+function sendGoogleLoginSuccess(response, hostToken) {
+  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  response.end(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Signing in</title></head>
+<body>
+<script>
+localStorage.setItem("pinboard.hostToken", ${JSON.stringify(hostToken)});
+location.replace("/#presenter");
+</script>
+</body>
+</html>`);
+}
+
+function setCookie(response, name, value, options = {}) {
+  const maxAge = Number(options.maxAge ?? 0);
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax"
+  ];
+  if (IS_PRODUCTION) {
+    parts.push("Secure");
+  }
+  if (maxAge > 0) {
+    parts.push(`Max-Age=${maxAge}`);
+  }
+  response.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearCookie(response, name) {
+  response.setHeader("Set-Cookie", `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${IS_PRODUCTION ? "; Secure" : ""}`);
+}
+
+function readCookies(request) {
+  const header = request.headers.cookie ?? "";
+  return Object.fromEntries(
+    header
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const [name, ...valueParts] = part.split("=");
+        return [name, decodeURIComponent(valueParts.join("="))];
+      })
+  );
 }
 
 function handleRouteError(response, error) {

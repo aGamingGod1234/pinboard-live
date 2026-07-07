@@ -1,3 +1,36 @@
+## [2026-07-07] — Presenter auth and adaptive live-stage cleanup
+
+### What Was Implemented
+- Stopped invalid-PIN and presenter-offline errors from remounting the home shader background; toasts now update in-place, use a content-sized red banner, and auto-dismiss.
+- Restored the home Presenter control and added a Google Identity Services presenter login path with server-side ID-token verification.
+- Added public Google config, verified-email Google presenter creation, and Railway `GOOGLE_CLIENT_ID` configuration.
+- Cleaned the editor, lobby, presenter question, results, leaderboard, and podium surfaces so live presentation uses top-right controls and no bottom control strip.
+- Prevented correct-answer reveal before results while keeping live total/per-option answer counts.
+- Removed empty media placeholders, fake ready orb, and "No scores yet" text from the live stage.
+- Added Google Console Web client configuration for the Railway origin and callback URL.
+
+### Files Modified
+- `public/app.js` - non-remounting message layer, Google sign-in client, cleaner editor/lobby/stage rendering, live results and podium flow.
+- `public/styles.css` - red toast styling, blue management shader styling, compact adaptive stage/lobby/editor styling, leaderboard and podium styles.
+- `server.mjs` - Google ID-token verification, public config endpoint, Google presenter auth endpoint, and OAuth client fallback routes.
+- `.env.example` - Google client ID configuration sample.
+- `README.md` - Google Identity Services setup notes.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- Google Identity Services is the correct production path because the current Google Console no longer reveals OAuth client secrets.
+- The existing Google Cloud project `scout-2662b` and Web client `scout` are the intended Google auth project for Pinboard.
+- CSS shader approximations remain acceptable for this vanilla JavaScript app; no new shader dependency was installed.
+
+### Known Issues / Deferred
+- Google sign-in can take several minutes for the newly saved Google Console origin settings to propagate.
+- The hidden email/password fallback remains available for local recovery.
+- Existing Google client secrets were left enabled; Google recommends deleting old unused secrets after verifying the new auth path.
+
+### Suggested Next Steps
+- Verify Google sign-in manually once Google Console propagation completes.
+- Replace the decorative lobby code tile with a real QR generator.
+
 ## [2026-07-07] - Shader UI and creator navigation pass
 
 ### What Was Implemented

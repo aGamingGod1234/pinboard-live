@@ -6,6 +6,8 @@ const QUESTION_KINDS = ["quiz", "true_false", "slide"];
 const OPTION_TONES = ["red", "blue", "gold", "green", "purple", "teal"];
 const OPTION_SHAPES = ["triangle", "diamond", "circle", "square", "star", "hexagon"];
 const LIVE_RECONNECT_NOTICE = "Live connection is retrying.";
+const MESSAGE_AUTO_DISMISS_MS = 4200;
+const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const STORAGE_KEYS = {
   hostToken: "pinboard.hostToken",
   playerId: "pinboard.playerId",
@@ -20,6 +22,8 @@ const state = {
   playerPin: getHashParam("pin") ?? localStorage.getItem(STORAGE_KEYS.playerPin) ?? "",
   presenterEmail: "",
   presenterPassword: "",
+  googleClientId: "",
+  googleScriptPromise: null,
   nickname: "",
   session: null,
   remote: null,
@@ -28,11 +32,13 @@ const state = {
   activeQuestionId: "",
   eventSource: null,
   error: "",
-  notice: ""
+  notice: "",
+  messageTimer: null
 };
 
 state.activeQuestionId = state.draft.questions[0]?.id ?? "";
 render();
+void loadPublicConfig();
 void restorePlayerIfPossible();
 
 window.addEventListener("hashchange", () => {
@@ -94,6 +100,7 @@ document.addEventListener("click", async (event) => {
     if (action === "add-question") addQuestion();
     if (action === "select-question") selectQuestion(button.dataset.questionId);
     if (action === "remove-question") removeQuestion(button.dataset.questionId);
+    if (action === "choose-media") chooseMedia(button.dataset.questionId);
     if (action === "copy-link") await copyJoinLink();
     if (action === "reset-deck") resetDeck();
     if (action === "host-start") await hostAction("start");
@@ -139,7 +146,7 @@ function render() {
   app.innerHTML = `
     ${isImmersive ? "" : renderTopbar()}
     <main class="${isImmersive ? "stage-view" : "view"}">
-      ${renderMessages()}
+      <div class="message-layer" data-message-layer>${renderMessages()}</div>
       ${state.mode === "presenter" ? renderPresenter() : ""}
       ${state.mode === "player" ? renderPlayer() : ""}
       ${state.mode === "home" ? renderHome() : ""}
@@ -148,13 +155,22 @@ function render() {
 
   if (isImmersive) {
     requestAnimationFrame(() => window.scrollTo(0, 0));
+    if (state.mode === "presenter" && state.hostToken && !state.session) {
+      requestAnimationFrame(syncCreatorScrollTracking);
+    }
   } else if (state.mode === "presenter" && state.hostToken && !state.session) {
     requestAnimationFrame(syncCreatorScrollTracking);
+  }
+
+  if (state.mode === "presenter" && !state.hostToken) {
+    requestAnimationFrame(() => {
+      void syncGoogleSignInButton();
+    });
   }
 }
 
 function shouldUseImmersiveShell() {
-  if (state.mode === "home" || state.mode === "player") {
+  if (state.mode === "home" || state.mode === "player" || state.mode === "presenter") {
     return true;
   }
   return Boolean(state.session);
@@ -203,7 +219,7 @@ function renderJoinScreen(showPresenterLink = false) {
   return `
     <section class="shader-screen shader-purple join-screen" data-motion-trigger="ambient-drift">
       <div class="screen-action-row">
-        ${showPresenterLink ? `<button class="glass-pill" type="button" data-action="go-presenter">Presenter</button>` : ""}
+        <button class="glass-pill" type="button" data-action="go-presenter">Presenter</button>
       </div>
       <div class="join-center">
         <div class="play-wordmark" aria-label="Pinboard Live">Pinboard<span>!</span></div>
@@ -223,23 +239,32 @@ function renderJoinScreen(showPresenterLink = false) {
 
 function renderPresenterLogin() {
   return `
-    <section class="presenter-login-shell">
-      <form class="panel presenter-login-card stack" data-action="auth">
+    <section class="shader-screen shader-management presenter-login-shell" data-motion-trigger="ambient-drift">
+      <div class="login-panel presenter-login-card stack">
         <div>
           <p class="eyebrow">Presenter</p>
-          <h1 class="panel-title">Unlock your live decks</h1>
+          <h1 class="panel-title">Sign in to Pinboard</h1>
+          <p class="muted">Create decks, edit questions, and host live sessions.</p>
         </div>
+        <div class="google-signin-slot" data-google-signin>
+          ${state.googleClientId ? `<button class="google-login-button" type="button" disabled>Loading Google sign-in...</button>` : `<button class="google-login-button" type="button" disabled>Google sign-in is not configured</button>`}
+        </div>
+        <details class="fallback-login">
+          <summary>Email/password fallback</summary>
+          <form class="stack" data-action="auth">
         <label>Email <input type="email" autocomplete="username" data-field="presenterEmail" value="${escapeHtml(state.presenterEmail)}" /></label>
         <label>Password <input type="password" autocomplete="current-password" data-field="presenterPassword" value="${escapeHtml(state.presenterPassword)}" /></label>
         <button type="submit">Unlock</button>
-      </form>
+          </form>
+        </details>
+      </div>
     </section>
   `;
 }
 
 function renderCreator() {
   return `
-    <section class="creator-page">
+    <section class="shader-screen shader-management creator-page" data-motion-trigger="ambient-drift">
       <form class="creator-shell" data-action="create-session">
         <aside class="creator-rail panel">
           <div class="panel-header">
@@ -280,6 +305,15 @@ function renderCreator() {
 
 function renderQuestionEditor(question, index) {
   const isSlide = question.kind === "slide";
+  const mediaLabel = question.media ? `
+      <label>Media
+        <input type="file" accept="image/*,video/*" data-field="media" data-question-id="${question.id}" />
+      </label>
+      <p class="muted">${escapeHtml(question.media.name)} - ${formatBytes(question.media.size)}</p>
+    ` : `
+      <button type="button" class="secondary media-add-button" data-action="choose-media" data-question-id="${question.id}">Add media</button>
+      <input class="hidden" type="file" accept="image/*,video/*" data-field="media" data-question-id="${question.id}" />
+    `;
 
   return `
     <article class="question-card creator-question ${question.id === state.activeQuestionId ? "is-active" : ""}" data-question-card="${question.id}">
@@ -299,10 +333,7 @@ function renderQuestionEditor(question, index) {
         </label>
         <button type="button" class="ghost remove-question" data-action="remove-question" data-question-id="${question.id}" ${state.draft.questions.length === 1 ? "disabled" : ""}>Remove</button>
       </div>
-      <label>Media
-        <input type="file" accept="image/*,video/*" data-field="media" data-question-id="${question.id}" />
-      </label>
-      ${question.media ? `<p class="muted">${escapeHtml(question.media.name)} - ${formatBytes(question.media.size)}</p>` : ""}
+      ${mediaLabel}
       ${isSlide ? "" : renderOptionEditor(question)}
       <p class="muted">Item ${index + 1} of ${state.draft.questions.length}</p>
     </article>
@@ -342,7 +373,7 @@ function renderHostLobby(remote) {
       <div class="lobby-pin-card">
         <div class="join-instructions">
           <span>Join at</span>
-          <strong>${escapeHtml(publicJoinPath)}</strong>
+          <a href="${escapeHtml(joinLink)}">${escapeHtml(publicJoinPath)}</a>
           <span>or use the Pinboard Live app screen.</span>
         </div>
         <div class="pin-divider" aria-hidden="true"></div>
@@ -354,14 +385,9 @@ function renderHostLobby(remote) {
           ${renderJoinCodeArt(remote.pin)}
         </button>
       </div>
-      <div class="host-start-cluster">
-        <button class="lock-button" type="button" data-action="copy-link" aria-label="Copy join link">Link</button>
-        <button class="start-button" type="button" data-action="host-start">Start</button>
-      </div>
       <div class="lobby-center">
         <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span><em>live</em></div>
-        <div class="waiting-pill">Waiting for participants</div>
-        <p class="lobby-link">${escapeHtml(joinLink)}</p>
+        <div class="waiting-pill">Waiting for participants<span class="waiting-dots" aria-hidden="true"></span></div>
       </div>
       <div class="participant-dock">
         <div class="dock-stat"><span>Players</span><strong>${remote.playerCount}</strong></div>
@@ -377,22 +403,24 @@ function renderPresenterStage(remote) {
   return `
     <section class="shader-screen shader-live-host presenter-stage" data-motion-trigger="ambient-drift">
       ${renderStageBar(remote, "question")}
-      <div class="stage-status-strip">
-        <div><span>Players</span><strong>${remote.playerCount}</strong></div>
-        <div><span>Answers</span><strong>${remote.answerCount}</strong></div>
-        <div><span>Phase</span><strong>${formatPhase(remote.phase)}</strong></div>
-        <div><span>Item</span><strong>${formatProgress(remote)}</strong></div>
-      </div>
-      ${question ? renderLiveQuestion(remote, true) : renderLobby(remote)}
-      <div class="stage-bottom-row">
-        ${renderHostControls(remote)}
-        <section class="leaderboard-panel">
-          <h2>Leaderboard</h2>
-          ${renderLeaderboard(remote.leaderboard)}
-        </section>
-      </div>
+      ${renderPresenterStageBody(remote, question)}
     </section>
   `;
+}
+
+function renderPresenterStageBody(remote, question) {
+  if (remote.phase === "ended") {
+    return renderPodium(remote.leaderboard);
+  }
+
+  if (remote.phase === "results") {
+    return `
+      ${question ? renderLiveQuestion(remote, true) : renderLobby(remote)}
+      ${renderLeaderboardBreak(remote)}
+    `;
+  }
+
+  return question ? renderLiveQuestion(remote, true) : renderLobby(remote);
 }
 
 function renderLobby(remote) {
@@ -429,6 +457,51 @@ function renderPlayer() {
   }
 
   return renderPlayerAnswerStage(remote);
+}
+
+function renderLeaderboardBreak(remote) {
+  return `
+    <section class="leaderboard-break">
+      <div>
+        <p class="eyebrow">Leaderboard</p>
+        <h2>Current scores</h2>
+      </div>
+      ${renderLeaderboard(remote.leaderboard)}
+      <div class="leaderboard-callouts">
+        <span>Highest climber: ${escapeHtml(remote.leaderboard[0]?.nickname ?? "Waiting")}</span>
+        <span>Best streak: ${escapeHtml(remote.leaderboard[1]?.nickname ?? remote.leaderboard[0]?.nickname ?? "Waiting")}</span>
+      </div>
+    </section>
+  `;
+}
+
+function renderPodium(players) {
+  const top = [...players].slice(0, 3);
+  const first = top[0];
+  const second = top[1];
+  const third = top[2];
+
+  return `
+    <section class="podium-screen">
+      <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span></div>
+      <h1>Final podium</h1>
+      <div class="podium-steps">
+        ${renderPodiumPlace(second, 2)}
+        ${renderPodiumPlace(first, 1)}
+        ${renderPodiumPlace(third, 3)}
+      </div>
+    </section>
+  `;
+}
+
+function renderPodiumPlace(player, place) {
+  return `
+    <div class="podium-place podium-place-${place}">
+      <strong>${place}</strong>
+      <span>${escapeHtml(player?.nickname ?? "Empty")}</span>
+      <em>${player?.score ?? 0}</em>
+    </div>
+  `;
 }
 
 function renderPlayerWaiting(remote) {
@@ -492,12 +565,13 @@ function renderLiveQuestion(remote, isHost) {
   const selectedOptionId = remote.selectedOptionId;
   const answerTotal = Math.max(1, Object.values(remote.answerCounts ?? {}).reduce((sum, count) => sum + count, 0));
   const canAnswer = !isHost && remote.phase === "answering" && question.kind !== "slide" && !selectedOptionId;
+  const showResults = remote.phase === "results" || remote.phase === "ended";
 
   return `
     <section class="current-slide live-question ${isHost ? "host-question" : "player-question"}">
       <div class="question-meta-row">
         <span>${formatQuestionLabel(question, remote)}</span>
-        <strong>${formatPhase(remote.phase)}</strong>
+        <strong>${remote.answerCount} answers</strong>
       </div>
       <h1>${escapeHtml(question.text)}</h1>
       ${isHost ? renderPresenterQuestionFrame(question, remote) : `<div class="question-media-frame">${renderMedia(question.media)}</div>`}
@@ -506,8 +580,8 @@ function renderLiveQuestion(remote, isHost) {
           ${question.options.map((option, index) => {
             const count = remote.answerCounts?.[option.id] ?? 0;
             const isSelected = selectedOptionId === option.id;
-            const isCorrect = remote.phase !== "answering" && option.id === question.correctOptionId;
-            const isWrong = remote.phase !== "answering" && isSelected && option.id !== question.correctOptionId;
+            const isCorrect = showResults && option.id === question.correctOptionId;
+            const isWrong = showResults && isSelected && option.id !== question.correctOptionId;
             return `
               <button type="button" class="answer-button ${isSelected ? "is-selected" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
                 <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
@@ -523,23 +597,14 @@ function renderLiveQuestion(remote, isHost) {
 }
 
 function renderPresenterQuestionFrame(question, remote) {
-  const phaseLabel = {
-    question: "Ready",
-    answering: "Open",
-    results: "Done",
-    ended: "Done"
-  }[remote.phase] ?? "Live";
+  if (!question.media) {
+    return "";
+  }
 
   return `
-    <div class="presenter-question-frame">
-      <div class="host-timer-orb" aria-label="Question status">${phaseLabel}</div>
+    <div class="presenter-question-frame presenter-question-frame-media">
       <div class="presenter-media-display">
-        ${question.media ? renderMedia(question.media) : `
-          <div class="presenter-media-placeholder" aria-hidden="true">
-            <span class="placeholder-mark">Pinboard<span>!</span></span>
-            <span class="placeholder-lines"></span>
-          </div>
-        `}
+        ${renderMedia(question.media)}
       </div>
       <div class="host-answer-meter">
         <strong>${remote.answerCount}</strong>
@@ -563,7 +628,7 @@ function renderMedia(media) {
 
 function renderLeaderboard(players) {
   if (!players.length) {
-    return `<p class="muted">No scores yet.</p>`;
+    return "";
   }
 
   return `
@@ -623,7 +688,7 @@ function getStagePrimaryAction(remote) {
 
 function renderParticipantList(remote) {
   if (!remote.recentPlayers.length) {
-    return `<p class="dock-empty">No one has joined yet.</p>`;
+    return "";
   }
 
   return `
@@ -642,7 +707,7 @@ function renderJoinCodeArt(pin) {
     return `<span class="${active ? "is-on" : ""}"></span>`;
   }).join("");
 
-  return `<span class="qr-grid" aria-hidden="true">${cells}</span><strong>Copy link</strong>`;
+  return `<span class="qr-grid" aria-hidden="true">${cells}</span><span class="copy-icon" aria-hidden="true"></span><strong>Copy link</strong>`;
 }
 
 async function authenticatePresenter() {
@@ -650,11 +715,93 @@ async function authenticatePresenter() {
     email: state.presenterEmail,
     password: state.presenterPassword
   });
-  state.hostToken = response.hostToken;
+  acceptPresenterSession(response.hostToken);
   state.presenterPassword = "";
-  localStorage.setItem(STORAGE_KEYS.hostToken, state.hostToken);
-  state.notice = "Presenter unlocked.";
+  showNotice("Presenter unlocked.");
   render();
+}
+
+async function loadPublicConfig() {
+  try {
+    const response = await fetch("/api/config");
+    const config = await response.json();
+    state.googleClientId = typeof config.googleClientId === "string" ? config.googleClientId : "";
+    if (state.mode === "presenter" && !state.hostToken) {
+      render();
+    }
+  } catch {
+    state.googleClientId = "";
+  }
+}
+
+async function syncGoogleSignInButton() {
+  const slot = document.querySelector("[data-google-signin]");
+  if (!slot || !state.googleClientId || slot.dataset.ready === "true") {
+    return;
+  }
+
+  await loadGoogleIdentityScript();
+  if (!window.google?.accounts?.id || !document.body.contains(slot)) {
+    return;
+  }
+
+  window.google.accounts.id.initialize({
+    client_id: state.googleClientId,
+    callback: handleGoogleCredential
+  });
+  slot.innerHTML = "";
+  window.google.accounts.id.renderButton(slot, {
+    theme: "filled_black",
+    size: "large",
+    type: "standard",
+    text: "continue_with",
+    shape: "rectangular",
+    width: Math.min(360, Math.max(240, Math.round(slot.getBoundingClientRect().width || 320)))
+  });
+  slot.dataset.ready = "true";
+}
+
+function loadGoogleIdentityScript() {
+  if (window.google?.accounts?.id) {
+    return Promise.resolve();
+  }
+
+  if (state.googleScriptPromise) {
+    return state.googleScriptPromise;
+  }
+
+  state.googleScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = GOOGLE_IDENTITY_SCRIPT_URL;
+    script.async = true;
+    script.defer = true;
+    script.addEventListener("load", resolve, { once: true });
+    script.addEventListener("error", () => reject(new Error("Google sign-in could not be loaded.")), { once: true });
+    document.head.append(script);
+  });
+
+  return state.googleScriptPromise;
+}
+
+async function handleGoogleCredential(result) {
+  try {
+    clearMessages();
+    const credential = typeof result?.credential === "string" ? result.credential : "";
+    if (!credential) {
+      throw new Error("Google sign-in did not return a credential.");
+    }
+    const response = await postJson("/api/auth/google", { credential });
+    acceptPresenterSession(response.hostToken);
+    showNotice("Presenter unlocked.");
+    render();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function acceptPresenterSession(hostToken) {
+  state.hostToken = hostToken;
+  localStorage.setItem(STORAGE_KEYS.hostToken, state.hostToken);
 }
 
 async function createSession() {
@@ -816,7 +963,6 @@ function updateFromInput(target) {
   if (field === "deckTitle") state.draft.title = target.value;
 
   if (!questionId) {
-    render();
     return;
   }
 
@@ -905,8 +1051,11 @@ async function copyJoinLink() {
     throw new Error("No join link is available.");
   }
   await navigator.clipboard.writeText(getJoinLink(state.remote.pin));
-  state.notice = "Join link copied.";
-  render();
+  showNotice("Join link copied.");
+}
+
+function chooseMedia(questionId) {
+  document.querySelector(`input[type="file"][data-field="media"][data-question-id="${CSS.escape(questionId ?? "")}"]`)?.click();
 }
 
 function setMode(mode) {
@@ -1143,11 +1292,43 @@ function formatBytes(bytes) {
 function clearMessages() {
   state.error = "";
   state.notice = "";
+  clearMessageTimer();
+  syncMessages();
 }
 
 function showError(error) {
   state.error = error instanceof Error ? error.message : "Something went wrong.";
-  render();
+  syncMessages();
+  scheduleMessageDismiss();
+}
+
+function showNotice(message) {
+  state.notice = message;
+  syncMessages();
+  scheduleMessageDismiss();
+}
+
+function syncMessages() {
+  const layer = document.querySelector("[data-message-layer]");
+  if (layer) {
+    layer.innerHTML = renderMessages();
+  }
+}
+
+function scheduleMessageDismiss() {
+  clearMessageTimer();
+  state.messageTimer = window.setTimeout(() => {
+    state.error = "";
+    state.notice = "";
+    syncMessages();
+  }, MESSAGE_AUTO_DISMISS_MS);
+}
+
+function clearMessageTimer() {
+  if (state.messageTimer) {
+    window.clearTimeout(state.messageTimer);
+    state.messageTimer = null;
+  }
 }
 
 function escapeHtml(value) {
