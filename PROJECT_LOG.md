@@ -294,13 +294,14 @@
 - Changed the player live question view into a strict four-button answer controller with score pinned at the bottom left.
 - Added presenter top-right primary flow controls: Start, Next, Reveal, and Next based on live phase.
 - Added server-side online presence checks for presenter and players using the live event stream connection.
+- Required presenter authentication on host event streams before counting the presenter as online.
 - Kicked players back to the home page with `The presenter has left the presentation.` when the presenter disconnects.
 - Removed disconnected players from presenter-side player lists and answer tracking after a short reconnect grace period.
 
 ### Files Modified
 - `public/app.js` - player lobby, four-button answer controller, presenter primary action button, and presenter-left client redirect.
 - `public/styles.css` - animated shader background tuning, role badges, player controller grid, and score dock styles.
-- `server.mjs` - presenter/player connection presence, presenter-left session ending, and player disconnect cleanup.
+- `server.mjs` - presenter/player connection presence, authenticated presenter event streams, presenter-left session ending, and player disconnect cleanup.
 - `PROJECT_LOG.md` - task record.
 
 ### Assumptions Made (flag these for review)

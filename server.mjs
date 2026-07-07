@@ -389,6 +389,9 @@ async function handleEventStream(request, response, url) {
   const role = url.searchParams.get("role") === "host" ? "host" : "player";
   const playerId = url.searchParams.get("playerId");
   const session = await getSession(pin);
+  if (role === "host") {
+    requireSessionHostEventToken(url, session);
+  }
 
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -752,6 +755,18 @@ function requirePresenterToken(request) {
 
 function requireSessionHostToken(request, session) {
   const presenter = requirePresenterToken(request);
+  if (presenter.id !== session.presenterId) {
+    throw new HttpError(403, "This presenter cannot control that session.");
+  }
+}
+
+function requireSessionHostEventToken(url, session) {
+  const token = url.searchParams.get("token");
+  if (!token) {
+    throw new HttpError(401, "Presenter authentication is required.");
+  }
+
+  const presenter = verifyPresenterToken(token);
   if (presenter.id !== session.presenterId) {
     throw new HttpError(403, "This presenter cannot control that session.");
   }

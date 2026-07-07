@@ -769,6 +769,10 @@ function connectEvents(pin, role, playerId) {
   }
 
   const params = new URLSearchParams({ pin, role });
+  if (role === "host") {
+    params.set("token", state.hostToken);
+  }
+
   if (playerId) {
     params.set("playerId", playerId);
   }
