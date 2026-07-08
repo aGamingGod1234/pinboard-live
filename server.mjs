@@ -34,6 +34,7 @@ const MAX_SSE_CLIENTS_PER_IP = Number(process.env.MAX_SSE_CLIENTS_PER_IP ?? 50);
 const MAX_ACTIVE_SESSIONS_PER_PRESENTER = Number(process.env.MAX_ACTIVE_SESSIONS_PER_PRESENTER ?? 20);
 const MAX_SESSION_MEDIA_BYTES = Number(process.env.MAX_SESSION_MEDIA_BYTES ?? MAX_MEDIA_BYTES);
 const MAX_SERIALIZED_SESSION_BYTES = Number(process.env.MAX_SERIALIZED_SESSION_BYTES ?? Math.ceil(MAX_SESSION_MEDIA_BYTES * BASE64_EXPANSION_RATIO) + 512 * KIB);
+const MAX_RATE_LIMIT_BUCKETS = Number(process.env.MAX_RATE_LIMIT_BUCKETS ?? 5000);
 const SSE_HEARTBEAT_MS = 25_000;
 const RECENT_PLAYER_LIMIT = 80;
 const LEADERBOARD_LIMIT = 20;
@@ -56,6 +57,7 @@ const PIN_ACTION_RATE_LIMIT = Number(process.env.PIN_ACTION_RATE_LIMIT ?? 60);
 const EVENT_STREAM_RATE_LIMIT = Number(process.env.EVENT_STREAM_RATE_LIMIT ?? 60);
 const HOST_COOKIE_NAME = "pinboard_host";
 const PLAYER_COOKIE_PREFIX = "pinboard_player_";
+const TRUST_PROXY = process.env.TRUST_PROXY === "true" || (IS_PRODUCTION && process.env.TRUST_PROXY !== "false");
 const ALLOWED_MEDIA_TYPES = new Set([
   "image/gif",
   "image/jpeg",
@@ -317,7 +319,7 @@ async function handleCreateSession(request, response) {
   };
 
   sessions.set(pin, session);
-  await persistSession(session);
+  await persistSession(session, { persistDeck: true });
   sendJson(response, 201, {
     pin,
     session: getStateForRole(session, "host", null)
@@ -973,6 +975,7 @@ function validateStartupConfig() {
   assertPositiveInteger(MAX_ACTIVE_SESSIONS_PER_PRESENTER, "MAX_ACTIVE_SESSIONS_PER_PRESENTER");
   assertPositiveInteger(MAX_SESSION_MEDIA_BYTES, "MAX_SESSION_MEDIA_BYTES");
   assertPositiveInteger(MAX_SERIALIZED_SESSION_BYTES, "MAX_SERIALIZED_SESSION_BYTES");
+  assertPositiveInteger(MAX_RATE_LIMIT_BUCKETS, "MAX_RATE_LIMIT_BUCKETS");
 
   if (ALLOW_LOCAL_DEFAULTS && IS_PRODUCTION) {
     throw new Error("PINBOARD_ALLOW_LOCAL_DEFAULTS cannot be true when NODE_ENV=production.");
@@ -1021,9 +1024,12 @@ async function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS live_sessions (
       pin TEXT PRIMARY KEY,
       snapshot JSONB NOT NULL,
+      questions JSONB,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await database.query("ALTER TABLE live_sessions ADD COLUMN IF NOT EXISTS questions JSONB");
+  await database.query("UPDATE live_sessions SET questions = snapshot->'questions' WHERE questions IS NULL AND snapshot ? 'questions'");
 }
 
 async function bootstrapPresenter() {
@@ -1223,7 +1229,7 @@ async function getGoogleJwk(keyId) {
     return jwk;
   }
 
-  if (googleUnknownKidCache.has(keyId)) {
+  if (googleUnknownKidCache.has(keyId) && now - googleJwksLastRefreshAt < GOOGLE_JWKS_MIN_REFRESH_INTERVAL_MS) {
     throw new HttpError(401, "Google credential key is not recognized.");
   }
 
@@ -1405,12 +1411,13 @@ async function persistedSessionExists(pin) {
   return result.rowCount > 0;
 }
 
-async function persistSession(session) {
+async function persistSession(session, options = {}) {
   const snapshot = serializeSessionSnapshot(session);
   const serializedSnapshot = JSON.stringify(snapshot);
   if (Buffer.byteLength(serializedSnapshot, "utf8") > MAX_SERIALIZED_SESSION_BYTES) {
     throw new HttpError(413, "Session state is larger than the configured limit.");
   }
+  const serializedQuestions = options.persistDeck ? JSON.stringify(session.questions) : null;
 
   sessions.set(session.pin, session);
 
@@ -1420,12 +1427,12 @@ async function persistSession(session) {
 
   await database.query(
     `
-      INSERT INTO live_sessions (pin, snapshot, updated_at)
-      VALUES ($1, $2, NOW())
+      INSERT INTO live_sessions (pin, snapshot, questions, updated_at)
+      VALUES ($1, $2, $3, NOW())
       ON CONFLICT (pin)
-      DO UPDATE SET snapshot = EXCLUDED.snapshot, updated_at = NOW()
+      DO UPDATE SET snapshot = EXCLUDED.snapshot, questions = COALESCE(EXCLUDED.questions, live_sessions.questions), updated_at = NOW()
     `,
-    [session.pin, serializedSnapshot]
+    [session.pin, serializedSnapshot, serializedQuestions]
   );
 }
 
@@ -1434,13 +1441,13 @@ async function loadPersistedSession(pin) {
     return sessions.get(pin) ?? null;
   }
 
-  const result = await database.query("SELECT snapshot FROM live_sessions WHERE pin = $1", [pin]);
+  const result = await database.query("SELECT snapshot, questions FROM live_sessions WHERE pin = $1", [pin]);
   if (!result.rows[0]) {
     return null;
   }
 
   const localClients = sessions.get(pin)?.clients ?? new Map();
-  const session = hydrateSessionSnapshot(result.rows[0].snapshot, localClients);
+  const session = hydrateSessionSnapshot(result.rows[0].snapshot, localClients, result.rows[0].questions);
   sessions.set(pin, session);
   return session;
 }
@@ -1448,9 +1455,9 @@ async function loadPersistedSession(pin) {
 function serializeSessionSnapshot(session) {
   return {
     pin: session.pin,
+    deckId: session.pin,
     title: session.title,
     presenterId: session.presenterId,
-    questions: session.questions,
     phase: session.phase,
     currentQuestionIndex: session.currentQuestionIndex,
     players: [...session.players.entries()],
@@ -1462,12 +1469,13 @@ function serializeSessionSnapshot(session) {
   };
 }
 
-function hydrateSessionSnapshot(snapshot, clients) {
+function hydrateSessionSnapshot(snapshot, clients, questions = null) {
+  const persistedQuestions = Array.isArray(questions) ? questions : snapshot.questions;
   return {
     pin: snapshot.pin,
     title: snapshot.title,
     presenterId: snapshot.presenterId,
-    questions: Array.isArray(snapshot.questions) ? snapshot.questions : [],
+    questions: Array.isArray(persistedQuestions) ? persistedQuestions : [],
     phase: snapshot.phase,
     currentQuestionIndex: Number(snapshot.currentQuestionIndex),
     players: new Map(snapshot.players ?? []),
@@ -1557,11 +1565,22 @@ function readCookies(request) {
 }
 
 function getClientAddress(request) {
+  if (TRUST_PROXY) {
+    const forwarded = request.headers["x-forwarded-for"];
+    const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    if (typeof forwardedValue === "string") {
+      const address = forwardedValue.split(",")[0]?.trim();
+      if (address) {
+        return address;
+      }
+    }
+  }
   return request.socket.remoteAddress ?? "unknown";
 }
 
 function enforceRateLimit(key, limit, windowMs) {
   const now = Date.now();
+  ensureRateLimitBucketCapacity(key, now);
   const current = rateLimitBuckets.get(key);
   if (!current || current.resetAt <= now) {
     rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
@@ -1570,6 +1589,25 @@ function enforceRateLimit(key, limit, windowMs) {
   current.count += 1;
   if (current.count > limit) {
     throw new HttpError(429, "Too many requests. Try again later.");
+  }
+}
+
+function ensureRateLimitBucketCapacity(key, now) {
+  if (rateLimitBuckets.has(key) || rateLimitBuckets.size < MAX_RATE_LIMIT_BUCKETS) {
+    return;
+  }
+
+  pruneExpiredRateLimitBuckets(now);
+  if (!rateLimitBuckets.has(key) && rateLimitBuckets.size >= MAX_RATE_LIMIT_BUCKETS) {
+    throw new HttpError(429, "Too many requests. Try again later.");
+  }
+}
+
+function pruneExpiredRateLimitBuckets(now = Date.now()) {
+  for (const [key, bucket] of rateLimitBuckets.entries()) {
+    if (bucket.resetAt <= now) {
+      rateLimitBuckets.delete(key);
+    }
   }
 }
 
@@ -1675,14 +1713,22 @@ export const __test = {
   assertDeckResourceLimits,
   assertGooglePresenterAllowed,
   createUniquePin,
+  enforceRateLimit,
   estimateDataUrlBytes,
   getGoogleJwk,
+  getClientAddress,
   googleJwksCache,
   googleUnknownKidCache,
+  hydrateSessionSnapshot,
+  MAX_RATE_LIMIT_BUCKETS,
   normalizeMedia,
   normalizeOptions,
   parseDataUrl,
   rateLimitBuckets,
+  serializeSessionSnapshot,
+  setGoogleJwksLastRefreshAt(value) {
+    googleJwksLastRefreshAt = value;
+  },
   signPlayerToken,
   validateStartupConfig,
   verifyPlayerToken

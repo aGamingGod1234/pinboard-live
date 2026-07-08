@@ -24,6 +24,7 @@ Password: local-presenter-password
 ```
 
 For any shared or deployed environment, set `PRESENTER_EMAIL`, `PRESENTER_PASSWORD`, and `AUTH_SECRET` instead of enabling local defaults. Set `DATABASE_URL` to persist presenter accounts in PostgreSQL.
+For reverse-proxy deployments such as Railway, keep `TRUST_PROXY=true` so per-client rate limits and SSE connection caps use the first `X-Forwarded-For` address instead of the platform router address.
 
 Google presenter login:
 
@@ -48,6 +49,6 @@ Create or select a Google Web client ID, add the app origin to Authorized JavaSc
 
 ## Scale Notes
 
-This prototype has configurable player, SSE, request-size, login, and media/session caps, but a single Node service is not a true unlimited-user deployment. Production scale still needs a pub/sub fanout layer, durable media storage, and load-balanced SSE or WebSocket infrastructure.
+This prototype has configurable player, SSE, request-size, login, rate-limit bucket, and media/session caps, but a single Node service is not a true unlimited-user deployment. Production scale still needs a pub/sub fanout layer, durable media storage, and load-balanced SSE or WebSocket infrastructure.
 
 The research agents recommended a production shape of server-authoritative rooms, presenter tokens, anonymous player tokens, full-state snapshots after reconnect, acked answer submissions, and either Socket.IO plus Redis/Postgres or a room-actor design such as Cloudflare Durable Objects for large live audiences.
