@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { createHmac, createPublicKey, randomBytes, randomUUID, scrypt, timingSafeEqual, verify } from "node:crypto";
+import { createHmac, createPublicKey, randomBytes, randomInt, randomUUID, scrypt, timingSafeEqual, verify } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
 
@@ -24,29 +25,60 @@ const MAX_POINTS = 1_000_000;
 const MAX_MEDIA_BYTES = Number(process.env.MAX_QUESTION_MEDIA_BYTES ?? 100 * MIB);
 const BASE64_EXPANSION_RATIO = 4 / 3;
 const MAX_REQUEST_BYTES = Number(process.env.MAX_REQUEST_BYTES ?? Math.ceil(MAX_MEDIA_BYTES * BASE64_EXPANSION_RATIO) + 16 * MIB);
+const MAX_AUTH_REQUEST_BYTES = Number(process.env.MAX_AUTH_REQUEST_BYTES ?? 16 * KIB);
+const MAX_PLAYER_ACTION_REQUEST_BYTES = Number(process.env.MAX_PLAYER_ACTION_REQUEST_BYTES ?? 8 * KIB);
+const MAX_PASSWORD_LENGTH = Number(process.env.MAX_PASSWORD_LENGTH ?? 256);
+const MAX_PLAYERS_PER_SESSION = Number(process.env.MAX_PLAYERS_PER_SESSION ?? 250);
+const MAX_SSE_CLIENTS_PER_SESSION = Number(process.env.MAX_SSE_CLIENTS_PER_SESSION ?? 500);
+const MAX_SSE_CLIENTS_PER_IP = Number(process.env.MAX_SSE_CLIENTS_PER_IP ?? 50);
+const MAX_ACTIVE_SESSIONS_PER_PRESENTER = Number(process.env.MAX_ACTIVE_SESSIONS_PER_PRESENTER ?? 20);
+const MAX_SESSION_MEDIA_BYTES = Number(process.env.MAX_SESSION_MEDIA_BYTES ?? MAX_MEDIA_BYTES);
+const MAX_SERIALIZED_SESSION_BYTES = Number(process.env.MAX_SERIALIZED_SESSION_BYTES ?? Math.ceil(MAX_SESSION_MEDIA_BYTES * BASE64_EXPANSION_RATIO) + 512 * KIB);
 const SSE_HEARTBEAT_MS = 25_000;
 const RECENT_PLAYER_LIMIT = 80;
 const LEADERBOARD_LIMIT = 20;
 const PASSWORD_KEY_BYTES = 64;
 const PASSWORD_SALT_BYTES = 16;
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PLAYER_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const HOST_DISCONNECT_GRACE_MS = 3000;
 const PLAYER_DISCONNECT_GRACE_MS = 2000;
 const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
 const GOOGLE_TOKEN_MAX_LENGTH = 4096;
 const GOOGLE_JWKS_DEFAULT_TTL_MS = 60 * 60 * 1000;
+const GOOGLE_JWKS_MIN_REFRESH_INTERVAL_MS = Number(process.env.GOOGLE_JWKS_MIN_REFRESH_INTERVAL_MS ?? 5 * 60 * 1000);
+const GOOGLE_UNKNOWN_KID_TTL_MS = Number(process.env.GOOGLE_UNKNOWN_KID_TTL_MS ?? 5 * 60 * 1000);
 const GOOGLE_ISSUERS = new Set(["accounts.google.com", "https://accounts.google.com"]);
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
+const LOGIN_IP_RATE_LIMIT = Number(process.env.LOGIN_IP_RATE_LIMIT ?? 10);
+const LOGIN_ACCOUNT_RATE_LIMIT = Number(process.env.LOGIN_ACCOUNT_RATE_LIMIT ?? 20);
+const PIN_ACTION_RATE_LIMIT = Number(process.env.PIN_ACTION_RATE_LIMIT ?? 60);
+const EVENT_STREAM_RATE_LIMIT = Number(process.env.EVENT_STREAM_RATE_LIMIT ?? 60);
+const HOST_COOKIE_NAME = "pinboard_host";
+const PLAYER_COOKIE_PREFIX = "pinboard_player_";
+const ALLOWED_MEDIA_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "video/mp4",
+  "video/ogg",
+  "video/webm"
+]);
 
 const PORT = Number(process.env.PORT ?? DEFAULT_PORT);
 const HOST = process.env.HOST ?? DEFAULT_HOST;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
-const AUTH_SECRET = process.env.AUTH_SECRET ?? (IS_PRODUCTION ? "" : DEFAULT_LOCAL_AUTH_SECRET);
-const BOOTSTRAP_PRESENTER_EMAIL = normalizeEmail(process.env.PRESENTER_EMAIL ?? (IS_PRODUCTION ? "" : DEFAULT_LOCAL_PRESENTER_EMAIL));
-const BOOTSTRAP_PRESENTER_PASSWORD = process.env.PRESENTER_PASSWORD ?? (IS_PRODUCTION ? "" : DEFAULT_LOCAL_PRESENTER_PASSWORD);
+const ALLOW_LOCAL_DEFAULTS = process.env.PINBOARD_ALLOW_LOCAL_DEFAULTS === "true";
+const AUTH_SECRET = process.env.AUTH_SECRET ?? (ALLOW_LOCAL_DEFAULTS ? DEFAULT_LOCAL_AUTH_SECRET : "");
+const BOOTSTRAP_PRESENTER_EMAIL = normalizeEmail(process.env.PRESENTER_EMAIL ?? (ALLOW_LOCAL_DEFAULTS ? DEFAULT_LOCAL_PRESENTER_EMAIL : ""));
+const BOOTSTRAP_PRESENTER_PASSWORD = process.env.PRESENTER_PASSWORD ?? (ALLOW_LOCAL_DEFAULTS ? DEFAULT_LOCAL_PRESENTER_PASSWORD : "");
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? "";
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ?? "";
+const GOOGLE_ALLOWED_EMAILS = new Set(parseCsv(process.env.GOOGLE_ALLOWED_EMAILS).map(normalizeEmail));
+const GOOGLE_ALLOWED_DOMAINS = new Set(parseCsv(process.env.GOOGLE_ALLOWED_DOMAINS).map((domain) => domain.toLowerCase()));
 const scryptAsync = promisify(scrypt);
 const { Pool } = pg;
 
@@ -57,7 +89,7 @@ const { Pool } = pg;
 /** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, options: Option[], correctOptionId: string | null, media: MediaAsset | null }} Question */
 /** @typedef {{ id: string, nickname: string, score: number, joinedAt: number }} Player */
 /** @typedef {{ optionId: string, answeredAt: number }} Answer */
-/** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, heartbeat: NodeJS.Timeout }} Client */
+/** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, ip: string, heartbeat: NodeJS.Timeout }} Client */
 /** @typedef {{ id: string, email: string, passwordHash: string }} Presenter */
 /** @typedef {{ pin: string, title: string, presenterId: string, questions: Question[], phase: Phase, currentQuestionIndex: number, players: Map<string, Player>, answers: Map<string, Answer>, scoredQuestionIndexes: Set<number>, openedAt: number | null, clients: Map<string, Client>, endedReason: string | null, createdAt: number }} Session */
 
@@ -75,6 +107,11 @@ const localPresentersByEmail = new Map();
 const sessions = new Map();
 /** @type {{ expiresAt: number, keys: Map<string, JsonWebKey> }} */
 const googleJwksCache = { expiresAt: 0, keys: new Map() };
+/** @type {Map<string, { count: number, resetAt: number }>} */
+const rateLimitBuckets = new Map();
+/** @type {Map<string, number>} */
+const googleUnknownKidCache = new Map();
+let googleJwksLastRefreshAt = 0;
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -92,10 +129,12 @@ const server = createServer(async (request, response) => {
   }
 });
 
-startServer().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (isMainModule()) {
+  startServer().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}
 
 async function startServer() {
   validateStartupConfig();
@@ -110,6 +149,7 @@ async function startServer() {
 
 async function routeRequest(request, response) {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+  const clientAddress = getClientAddress(request);
 
   if (request.method === "GET" && url.pathname === "/health") {
     sendJson(response, 200, { ok: true, database: database ? "postgres" : "memory" });
@@ -117,6 +157,7 @@ async function routeRequest(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/events") {
+    enforceRateLimit(`events:${clientAddress}`, EVENT_STREAM_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
     await handleEventStream(request, response, url);
     return;
   }
@@ -155,6 +196,7 @@ async function routeRequest(request, response) {
 
   const actionMatch = url.pathname.match(/^\/api\/sessions\/(\d{6})\/([a-z-]+)$/);
   if (request.method === "POST" && actionMatch) {
+    enforceRateLimit(`pin-action:${clientAddress}:${actionMatch[2]}`, PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
     await handleSessionAction(request, response, actionMatch[1], actionMatch[2]);
     return;
   }
@@ -168,17 +210,20 @@ async function routeRequest(request, response) {
 }
 
 async function handleAuth(request, response) {
-  const body = await readJson(request);
+  const body = await readJson(request, MAX_AUTH_REQUEST_BYTES);
   const email = normalizeEmail(readString(body.email, "Email"));
-  const password = readString(body.password, "Password");
+  const password = limitSecret(readString(body.password, "Password"), MAX_PASSWORD_LENGTH, "Password");
+  enforceRateLimit(`login:ip:${getClientAddress(request)}`, LOGIN_IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
+  enforceRateLimit(`login:account:${email}`, LOGIN_ACCOUNT_RATE_LIMIT, 15 * RATE_LIMIT_WINDOW_MS);
   const presenter = await findPresenterByEmail(email);
 
   if (!presenter || !(await verifyPassword(password, presenter.passwordHash))) {
     throw new HttpError(401, "Email or password is not valid.");
   }
 
+  const hostToken = signPresenterToken(presenter);
+  setHostAuthCookie(response, hostToken);
   sendJson(response, 200, {
-    hostToken: signPresenterToken(presenter),
     presenter: { email: presenter.email }
   });
 }
@@ -226,18 +271,21 @@ async function handleGoogleAuthCallback(request, response, url) {
   }
 
   const presenter = await findOrCreateGooglePresenter(profile.email);
-  sendGoogleLoginSuccess(response, signPresenterToken(presenter));
+  const hostToken = signPresenterToken(presenter);
+  setHostAuthCookie(response, hostToken);
+  sendGoogleLoginSuccess(response);
 }
 
 async function handleGoogleCredentialAuth(request, response) {
   assertGoogleClientIdConfigured();
-  const body = await readJson(request);
+  enforceRateLimit(`google-auth:${getClientAddress(request)}`, LOGIN_IP_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
+  const body = await readJson(request, GOOGLE_TOKEN_MAX_LENGTH + 1024);
   const credential = readString(body.credential, "Google credential");
   const profile = await verifyGoogleCredentialToken(credential);
   const presenter = await findOrCreateGooglePresenter(profile.email);
 
+  setHostAuthCookie(response, signPresenterToken(presenter));
   sendJson(response, 200, {
-    hostToken: signPresenterToken(presenter),
     presenter: { email: presenter.email }
   });
 }
@@ -247,6 +295,8 @@ async function handleCreateSession(request, response) {
   const body = await readJson(request);
   const title = limitText(readString(body.title, "Deck title"), MAX_TITLE_LENGTH, "Deck title");
   const questions = normalizeQuestions(body.questions);
+  assertDeckResourceLimits(questions);
+  await assertPresenterSessionQuota(presenter.id);
   const pin = await createUniquePin();
 
   /** @type {Session} */
@@ -318,7 +368,8 @@ async function handleSessionAction(request, response, pin, action) {
 
 async function handleJoin(request, response, session) {
   assertPresenterOnline(session);
-  const body = await readJson(request);
+  assertSessionJoinCapacity(session);
+  const body = await readJson(request, MAX_PLAYER_ACTION_REQUEST_BYTES);
   const nickname = limitText(readString(body.nickname, "Nickname"), MAX_NICKNAME_LENGTH, "Nickname");
   const player = {
     id: randomUUID(),
@@ -334,6 +385,7 @@ async function handleJoin(request, response, session) {
   session.players.set(player.id, player);
   await persistSession(session);
   broadcastState(session);
+  setPlayerAuthCookie(response, session.pin, signPlayerToken(session.pin, player.id));
   sendJson(response, 201, {
     playerId: player.id,
     session: getStateForRole(session, "player", player.id)
@@ -342,13 +394,14 @@ async function handleJoin(request, response, session) {
 
 async function handleResume(request, response, session) {
   assertPresenterOnline(session);
-  const body = await readJson(request);
-  const playerId = readString(body.playerId, "Player ID");
+  await readJson(request, MAX_PLAYER_ACTION_REQUEST_BYTES);
+  const playerId = requireSessionPlayerToken(request, session);
 
   if (!session.players.has(playerId)) {
     throw new HttpError(404, "Player was not found in this session.");
   }
 
+  setPlayerAuthCookie(response, session.pin, signPlayerToken(session.pin, playerId));
   sendJson(response, 200, {
     playerId,
     session: getStateForRole(session, "player", playerId)
@@ -356,8 +409,8 @@ async function handleResume(request, response, session) {
 }
 
 async function handleAnswer(request, response, session) {
-  const body = await readJson(request);
-  const playerId = readString(body.playerId, "Player ID");
+  const body = await readJson(request, MAX_PLAYER_ACTION_REQUEST_BYTES);
+  const playerId = requireSessionPlayerToken(request, session);
   const optionId = readString(body.optionId, "Option ID");
   const question = getCurrentQuestion(session);
 
@@ -477,11 +530,15 @@ function scoreCurrentQuestion(session, question) {
 async function handleEventStream(request, response, url) {
   const pin = normalizePin(url.searchParams.get("pin"));
   const role = url.searchParams.get("role") === "host" ? "host" : "player";
-  const playerId = url.searchParams.get("playerId");
   const session = await getSession(pin);
+  const clientAddress = getClientAddress(request);
+  let playerId = null;
   if (role === "host") {
-    requireSessionHostEventToken(url, session);
+    requireSessionHostEventToken(request, session);
+  } else {
+    playerId = requireSessionPlayerToken(request, session);
   }
+  assertEventStreamCapacity(session, clientAddress);
 
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -495,6 +552,7 @@ async function handleEventStream(request, response, url) {
     response,
     role,
     playerId,
+    ip: clientAddress,
     heartbeat: setInterval(() => response.write(": keep-alive\n\n"), SSE_HEARTBEAT_MS)
   };
 
@@ -663,13 +721,13 @@ async function serveStatic(response, pathname) {
   response.end(file);
 }
 
-async function readJson(request) {
+async function readJson(request, maxBytes = MAX_REQUEST_BYTES) {
   const chunks = [];
   let bytesRead = 0;
 
   for await (const chunk of request) {
     bytesRead += chunk.length;
-    if (bytesRead > MAX_REQUEST_BYTES) {
+    if (bytesRead > maxBytes) {
       throw new HttpError(413, "Request is larger than the configured limit.");
     }
     chunks.push(chunk);
@@ -759,6 +817,10 @@ function normalizeOptions(input) {
     const id = readString(option.id, `Option ${index + 1} ID`);
     const text = limitText(readString(option.text, `Option ${index + 1} text`), MAX_OPTION_TEXT_LENGTH, `Option ${index + 1} text`);
 
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+      throw new HttpError(400, "Option IDs must use only letters, numbers, underscores, and hyphens.");
+    }
+
     if (ids.has(id)) {
       throw new HttpError(400, "Option IDs must be unique.");
     }
@@ -792,7 +854,12 @@ function normalizeMedia(input) {
     throw new HttpError(400, "Media size is invalid.");
   }
 
-  const estimatedBytes = estimateDataUrlBytes(media.dataUrl);
+  const parsed = parseDataUrl(media.dataUrl);
+  if (media.type.toLowerCase() !== parsed.mimeType) {
+    throw new HttpError(400, "Media type must match the data URL MIME type.");
+  }
+
+  const estimatedBytes = parsed.bytes;
   if (media.size > MAX_MEDIA_BYTES || estimatedBytes > MAX_MEDIA_BYTES) {
     throw new HttpError(413, "Question media must be 100 MB or smaller.");
   }
@@ -801,14 +868,27 @@ function normalizeMedia(input) {
 }
 
 function estimateDataUrlBytes(dataUrl) {
-  const match = dataUrl.match(/^data:[^;]+;base64,([A-Za-z0-9+/=]+)$/);
+  return parseDataUrl(dataUrl).bytes;
+}
+
+function parseDataUrl(dataUrl) {
+  const match = dataUrl.match(/^data:([a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*);base64,([A-Za-z0-9+/]+={0,2})$/i);
   if (!match) {
     throw new HttpError(400, "Media must be a base64 data URL.");
   }
 
-  const base64 = match[1];
+  const mimeType = match[1].toLowerCase();
+  if (!ALLOWED_MEDIA_TYPES.has(mimeType)) {
+    throw new HttpError(400, "Media type is not allowed.");
+  }
+
+  const base64 = match[2];
+  if (base64.length % 4 === 1) {
+    throw new HttpError(400, "Media base64 data is invalid.");
+  }
+
   const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.floor((base64.length * 3) / 4) - padding;
+  return { mimeType, bytes: Math.floor((base64.length * 3) / 4) - padding };
 }
 
 function readString(value, label) {
@@ -831,12 +911,19 @@ function limitText(value, maxLength, label) {
   return trimmed;
 }
 
+function limitSecret(value, maxLength, label) {
+  if (value.length > maxLength) {
+    throw new HttpError(400, `${label} must be ${maxLength} characters or fewer.`);
+  }
+  return value;
+}
+
 function requireGlobalHostToken(request) {
   return requirePresenterToken(request);
 }
 
 function requirePresenterToken(request) {
-  const token = request.headers["x-host-token"];
+  const token = readCookies(request)[HOST_COOKIE_NAME] ?? request.headers["x-host-token"];
   if (typeof token !== "string") {
     throw new HttpError(401, "Presenter authentication is required.");
   }
@@ -850,8 +937,8 @@ function requireSessionHostToken(request, session) {
   }
 }
 
-function requireSessionHostEventToken(url, session) {
-  const token = url.searchParams.get("token");
+function requireSessionHostEventToken(request, session) {
+  const token = readCookies(request)[HOST_COOKIE_NAME];
   if (!token) {
     throw new HttpError(401, "Presenter authentication is required.");
   }
@@ -862,13 +949,57 @@ function requireSessionHostEventToken(url, session) {
   }
 }
 
+function requireSessionPlayerToken(request, session) {
+  const token = readCookies(request)[playerCookieName(session.pin)];
+  if (!token) {
+    throw new HttpError(401, "Player session authentication is required.");
+  }
+
+  const player = verifyPlayerToken(token);
+  if (player.pin !== session.pin || !session.players.has(player.playerId)) {
+    throw new HttpError(403, "Player session authentication is not valid for this session.");
+  }
+  return player.playerId;
+}
+
 function validateStartupConfig() {
+  assertPositiveInteger(MAX_REQUEST_BYTES, "MAX_REQUEST_BYTES");
+  assertPositiveInteger(MAX_AUTH_REQUEST_BYTES, "MAX_AUTH_REQUEST_BYTES");
+  assertPositiveInteger(MAX_PLAYER_ACTION_REQUEST_BYTES, "MAX_PLAYER_ACTION_REQUEST_BYTES");
+  assertPositiveInteger(MAX_PASSWORD_LENGTH, "MAX_PASSWORD_LENGTH");
+  assertPositiveInteger(MAX_PLAYERS_PER_SESSION, "MAX_PLAYERS_PER_SESSION");
+  assertPositiveInteger(MAX_SSE_CLIENTS_PER_SESSION, "MAX_SSE_CLIENTS_PER_SESSION");
+  assertPositiveInteger(MAX_SSE_CLIENTS_PER_IP, "MAX_SSE_CLIENTS_PER_IP");
+  assertPositiveInteger(MAX_ACTIVE_SESSIONS_PER_PRESENTER, "MAX_ACTIVE_SESSIONS_PER_PRESENTER");
+  assertPositiveInteger(MAX_SESSION_MEDIA_BYTES, "MAX_SESSION_MEDIA_BYTES");
+  assertPositiveInteger(MAX_SERIALIZED_SESSION_BYTES, "MAX_SERIALIZED_SESSION_BYTES");
+
+  if (ALLOW_LOCAL_DEFAULTS && IS_PRODUCTION) {
+    throw new Error("PINBOARD_ALLOW_LOCAL_DEFAULTS cannot be true when NODE_ENV=production.");
+  }
+
   if (!AUTH_SECRET) {
-    throw new Error("AUTH_SECRET is required in production.");
+    throw new Error("AUTH_SECRET is required. Set PINBOARD_ALLOW_LOCAL_DEFAULTS=true only for local development defaults.");
+  }
+
+  if (!ALLOW_LOCAL_DEFAULTS && AUTH_SECRET === DEFAULT_LOCAL_AUTH_SECRET) {
+    throw new Error("AUTH_SECRET must not use the local development default.");
   }
 
   if ((!BOOTSTRAP_PRESENTER_EMAIL || !BOOTSTRAP_PRESENTER_PASSWORD) && !GOOGLE_CLIENT_ID) {
     throw new Error("Configure either PRESENTER_EMAIL/PRESENTER_PASSWORD or GOOGLE_CLIENT_ID.");
+  }
+
+  if (!ALLOW_LOCAL_DEFAULTS && BOOTSTRAP_PRESENTER_PASSWORD === DEFAULT_LOCAL_PRESENTER_PASSWORD) {
+    throw new Error("PRESENTER_PASSWORD must not use the local development default.");
+  }
+
+  if (GOOGLE_CLIENT_ID && !hasGooglePresenterAllowlist()) {
+    throw new Error("GOOGLE_ALLOWED_EMAILS or GOOGLE_ALLOWED_DOMAINS is required when GOOGLE_CLIENT_ID is configured.");
+  }
+
+  if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && !GOOGLE_REDIRECT_URI) {
+    throw new Error("GOOGLE_REDIRECT_URI is required for Google OAuth code flow.");
   }
 }
 
@@ -936,6 +1067,7 @@ async function findPresenterByEmail(email) {
 
 async function findOrCreateGooglePresenter(email) {
   const normalizedEmail = normalizeEmail(email);
+  assertGooglePresenterAllowed(normalizedEmail);
   const existing = await findPresenterByEmail(normalizedEmail);
   if (existing) {
     return existing;
@@ -966,7 +1098,7 @@ async function findOrCreateGooglePresenter(email) {
 }
 
 function assertGoogleOAuthConfigured() {
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
     throw new HttpError(503, "Google OAuth is not configured yet.");
   }
 }
@@ -975,18 +1107,16 @@ function assertGoogleClientIdConfigured() {
   if (!GOOGLE_CLIENT_ID) {
     throw new HttpError(503, "Google sign-in is not configured yet.");
   }
-}
-
-function getGoogleRedirectUri(request) {
-  if (GOOGLE_REDIRECT_URI) {
-    return GOOGLE_REDIRECT_URI;
+  if (!hasGooglePresenterAllowlist()) {
+    throw new HttpError(503, "Google presenter allowlist is not configured yet.");
   }
-  const proto = request.headers["x-forwarded-proto"] ?? "http";
-  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
-  return `${proto}://${host}/auth/google/callback`;
 }
 
-async function exchangeGoogleCode(request, code) {
+function getGoogleRedirectUri() {
+  return GOOGLE_REDIRECT_URI;
+}
+
+async function exchangeGoogleCode(_request, code) {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -994,7 +1124,7 @@ async function exchangeGoogleCode(request, code) {
       code,
       client_id: GOOGLE_CLIENT_ID,
       client_secret: GOOGLE_CLIENT_SECRET,
-      redirect_uri: getGoogleRedirectUri(request),
+      redirect_uri: getGoogleRedirectUri(),
       grant_type: "authorization_code"
     })
   });
@@ -1082,11 +1212,30 @@ function parseBase64UrlJson(value, label) {
 
 async function getGoogleJwk(keyId) {
   const now = Date.now();
-  if (googleJwksCache.expiresAt <= now || !googleJwksCache.keys.has(keyId)) {
+  pruneExpiredGoogleKidMisses(now);
+
+  if (googleJwksCache.expiresAt <= now) {
     await refreshGoogleJwks();
   }
 
-  const jwk = googleJwksCache.keys.get(keyId);
+  let jwk = googleJwksCache.keys.get(keyId);
+  if (jwk) {
+    return jwk;
+  }
+
+  if (googleUnknownKidCache.has(keyId)) {
+    throw new HttpError(401, "Google credential key is not recognized.");
+  }
+
+  if (now - googleJwksLastRefreshAt >= GOOGLE_JWKS_MIN_REFRESH_INTERVAL_MS) {
+    await refreshGoogleJwks();
+    jwk = googleJwksCache.keys.get(keyId);
+    if (jwk) {
+      return jwk;
+    }
+  }
+
+  googleUnknownKidCache.set(keyId, Date.now() + GOOGLE_UNKNOWN_KID_TTL_MS);
   if (!jwk) {
     throw new HttpError(401, "Google credential key is not recognized.");
   }
@@ -1110,6 +1259,7 @@ async function refreshGoogleJwks() {
 
   googleJwksCache.keys = keys;
   googleJwksCache.expiresAt = Date.now() + parseGoogleCacheTtl(response.headers.get("cache-control"));
+  googleJwksLastRefreshAt = Date.now();
 }
 
 function parseGoogleCacheTtl(cacheControl) {
@@ -1140,6 +1290,7 @@ async function verifyPassword(password, passwordHash) {
 function signPresenterToken(presenter) {
   const payload = Buffer.from(
     JSON.stringify({
+      typ: "host",
       sub: presenter.id,
       email: presenter.email,
       exp: Date.now() + TOKEN_TTL_MS
@@ -1162,12 +1313,46 @@ function verifyPresenterToken(token) {
 
   try {
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (typeof decoded.sub !== "string" || typeof decoded.email !== "string" || Number(decoded.exp) < Date.now()) {
+    if (decoded.typ !== "host" || typeof decoded.sub !== "string" || typeof decoded.email !== "string" || Number(decoded.exp) < Date.now()) {
       throw new Error("Invalid token payload.");
     }
     return { id: decoded.sub, email: decoded.email };
   } catch {
     throw new HttpError(401, "Presenter authentication is not valid.");
+  }
+}
+
+function signPlayerToken(pin, playerId) {
+  const payload = Buffer.from(
+    JSON.stringify({
+      typ: "player",
+      pin,
+      playerId,
+      exp: Date.now() + PLAYER_TOKEN_TTL_MS
+    })
+  ).toString("base64url");
+  return `${payload}.${createTokenSignature(payload)}`;
+}
+
+function verifyPlayerToken(token) {
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) {
+    throw new HttpError(401, "Player session authentication is required.");
+  }
+
+  const expected = createTokenSignature(payload);
+  if (!constantTimeStringEquals(signature, expected)) {
+    throw new HttpError(401, "Player session authentication is not valid.");
+  }
+
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (decoded.typ !== "player" || typeof decoded.pin !== "string" || typeof decoded.playerId !== "string" || Number(decoded.exp) < Date.now()) {
+      throw new Error("Invalid player token payload.");
+    }
+    return { pin: decoded.pin, playerId: decoded.playerId };
+  } catch {
+    throw new HttpError(401, "Player session authentication is not valid.");
   }
 }
 
@@ -1203,7 +1388,7 @@ function normalizePin(pin) {
 
 async function createUniquePin() {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const pin = String(Math.floor(Math.random() * 10 ** GAME_PIN_LENGTH)).padStart(GAME_PIN_LENGTH, "0");
+    const pin = String(randomInt(0, 10 ** GAME_PIN_LENGTH)).padStart(GAME_PIN_LENGTH, "0");
     if (!sessions.has(pin) && !(await persistedSessionExists(pin))) {
       return pin;
     }
@@ -1221,6 +1406,12 @@ async function persistedSessionExists(pin) {
 }
 
 async function persistSession(session) {
+  const snapshot = serializeSessionSnapshot(session);
+  const serializedSnapshot = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serializedSnapshot, "utf8") > MAX_SERIALIZED_SESSION_BYTES) {
+    throw new HttpError(413, "Session state is larger than the configured limit.");
+  }
+
   sessions.set(session.pin, session);
 
   if (!database) {
@@ -1234,7 +1425,7 @@ async function persistSession(session) {
       ON CONFLICT (pin)
       DO UPDATE SET snapshot = EXCLUDED.snapshot, updated_at = NOW()
     `,
-    [session.pin, JSON.stringify(serializeSessionSnapshot(session))]
+    [session.pin, serializedSnapshot]
   );
 }
 
@@ -1294,14 +1485,15 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
-function sendGoogleLoginSuccess(response, hostToken) {
+function sendGoogleLoginSuccess(response) {
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   response.end(`<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Signing in</title></head>
 <body>
 <script>
-localStorage.setItem("pinboard.hostToken", ${JSON.stringify(hostToken)});
+localStorage.removeItem("pinboard.hostToken");
+localStorage.setItem("pinboard.presenterSession", "1");
 location.replace("/#presenter");
 </script>
 </body>
@@ -1322,11 +1514,32 @@ function setCookie(response, name, value, options = {}) {
   if (maxAge > 0) {
     parts.push(`Max-Age=${maxAge}`);
   }
-  response.setHeader("Set-Cookie", parts.join("; "));
+  appendSetCookie(response, parts.join("; "));
 }
 
 function clearCookie(response, name) {
-  response.setHeader("Set-Cookie", `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${IS_PRODUCTION ? "; Secure" : ""}`);
+  appendSetCookie(response, `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${IS_PRODUCTION ? "; Secure" : ""}`);
+}
+
+function appendSetCookie(response, cookie) {
+  const existing = response.getHeader("Set-Cookie");
+  if (!existing) {
+    response.setHeader("Set-Cookie", cookie);
+    return;
+  }
+  response.setHeader("Set-Cookie", Array.isArray(existing) ? [...existing, cookie] : [existing, cookie]);
+}
+
+function setHostAuthCookie(response, token) {
+  setCookie(response, HOST_COOKIE_NAME, token, { maxAge: Math.floor(TOKEN_TTL_MS / 1000) });
+}
+
+function setPlayerAuthCookie(response, pin, token) {
+  setCookie(response, playerCookieName(pin), token, { maxAge: Math.floor(PLAYER_TOKEN_TTL_MS / 1000) });
+}
+
+function playerCookieName(pin) {
+  return `${PLAYER_COOKIE_PREFIX}${pin}`;
 }
 
 function readCookies(request) {
@@ -1343,6 +1556,109 @@ function readCookies(request) {
   );
 }
 
+function getClientAddress(request) {
+  return request.socket.remoteAddress ?? "unknown";
+}
+
+function enforceRateLimit(key, limit, windowMs) {
+  const now = Date.now();
+  const current = rateLimitBuckets.get(key);
+  if (!current || current.resetAt <= now) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return;
+  }
+  current.count += 1;
+  if (current.count > limit) {
+    throw new HttpError(429, "Too many requests. Try again later.");
+  }
+}
+
+function assertSessionJoinCapacity(session) {
+  if (session.players.size >= MAX_PLAYERS_PER_SESSION) {
+    throw new HttpError(429, "This session has reached its player limit.");
+  }
+}
+
+function assertEventStreamCapacity(session, clientAddress) {
+  if (session.clients.size >= MAX_SSE_CLIENTS_PER_SESSION) {
+    throw new HttpError(429, "This session has reached its live connection limit.");
+  }
+
+  const clientsForAddress = [...session.clients.values()].filter((client) => client.ip === clientAddress).length;
+  if (clientsForAddress >= MAX_SSE_CLIENTS_PER_IP) {
+    throw new HttpError(429, "This client has reached the live connection limit.");
+  }
+}
+
+function assertDeckResourceLimits(questions) {
+  const totalMediaBytes = questions.reduce((total, question) => total + (question.media ? estimateDataUrlBytes(question.media.dataUrl) : 0), 0);
+  if (totalMediaBytes > MAX_SESSION_MEDIA_BYTES) {
+    throw new HttpError(413, "Session media is larger than the configured total limit.");
+  }
+
+  const serializedQuestionsBytes = Buffer.byteLength(JSON.stringify(questions), "utf8");
+  if (serializedQuestionsBytes > MAX_SERIALIZED_SESSION_BYTES) {
+    throw new HttpError(413, "Session state is larger than the configured limit.");
+  }
+}
+
+async function assertPresenterSessionQuota(presenterId) {
+  const memoryCount = [...sessions.values()].filter((session) => session.presenterId === presenterId && session.phase !== "ended").length;
+  if (memoryCount >= MAX_ACTIVE_SESSIONS_PER_PRESENTER) {
+    throw new HttpError(429, "Presenter has reached the active session limit.");
+  }
+
+  if (!database) {
+    return;
+  }
+
+  const result = await database.query(
+    "SELECT COUNT(*)::int AS count FROM live_sessions WHERE snapshot->>'presenterId' = $1 AND COALESCE(snapshot->>'phase', '') <> 'ended'",
+    [presenterId]
+  );
+  if (Number(result.rows[0]?.count ?? 0) >= MAX_ACTIVE_SESSIONS_PER_PRESENTER) {
+    throw new HttpError(429, "Presenter has reached the active session limit.");
+  }
+}
+
+function parseCsv(value) {
+  return String(value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function hasGooglePresenterAllowlist() {
+  return GOOGLE_ALLOWED_EMAILS.size > 0 || GOOGLE_ALLOWED_DOMAINS.size > 0;
+}
+
+function assertGooglePresenterAllowed(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const domain = normalizedEmail.split("@")[1] ?? "";
+  if (GOOGLE_ALLOWED_EMAILS.has(normalizedEmail) || GOOGLE_ALLOWED_DOMAINS.has(domain)) {
+    return;
+  }
+  throw new HttpError(403, "Google account is not authorized as a presenter.");
+}
+
+function pruneExpiredGoogleKidMisses(now = Date.now()) {
+  for (const [keyId, expiresAt] of googleUnknownKidCache.entries()) {
+    if (expiresAt <= now) {
+      googleUnknownKidCache.delete(keyId);
+    }
+  }
+}
+
+function assertPositiveInteger(value, label) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+}
+
+function isMainModule() {
+  return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+}
+
 function handleRouteError(response, error) {
   if (response.headersSent) {
     response.end();
@@ -1353,3 +1669,21 @@ function handleRouteError(response, error) {
   const message = error instanceof Error ? error.message : "Unexpected server error.";
   sendJson(response, statusCode, { error: message });
 }
+
+export const __test = {
+  HttpError,
+  assertDeckResourceLimits,
+  assertGooglePresenterAllowed,
+  createUniquePin,
+  estimateDataUrlBytes,
+  getGoogleJwk,
+  googleJwksCache,
+  googleUnknownKidCache,
+  normalizeMedia,
+  normalizeOptions,
+  parseDataUrl,
+  rateLimitBuckets,
+  signPlayerToken,
+  validateStartupConfig,
+  verifyPlayerToken
+};

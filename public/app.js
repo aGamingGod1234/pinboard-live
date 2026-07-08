@@ -1,4 +1,5 @@
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
+const ALLOWED_MEDIA_TYPES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp", "video/mp4", "video/ogg", "video/webm"]);
 const DEFAULT_POINTS = 1000;
 const DEFAULT_OPTIONS = ["Red", "Blue", "Gold", "Green"];
 const TRUE_FALSE_OPTIONS = ["True", "False"];
@@ -9,7 +10,7 @@ const LIVE_RECONNECT_NOTICE = "Live connection is retrying.";
 const MESSAGE_AUTO_DISMISS_MS = 4200;
 const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const STORAGE_KEYS = {
-  hostToken: "pinboard.hostToken",
+  presenterSession: "pinboard.presenterSession",
   playerId: "pinboard.playerId",
   playerPin: "pinboard.playerPin"
 };
@@ -17,7 +18,7 @@ const STORAGE_KEYS = {
 const app = document.querySelector("#app");
 const state = {
   mode: getInitialMode(),
-  hostToken: localStorage.getItem(STORAGE_KEYS.hostToken) ?? "",
+  hostToken: localStorage.getItem(STORAGE_KEYS.presenterSession) ?? "",
   playerId: localStorage.getItem(STORAGE_KEYS.playerId) ?? "",
   playerPin: getHashParam("pin") ?? localStorage.getItem(STORAGE_KEYS.playerPin) ?? "",
   presenterEmail: "",
@@ -345,9 +346,9 @@ function renderOptionEditor(question) {
     <div class="option-list">
       ${question.options.map((option, index) => `
         <div class="option-row" data-tone="${OPTION_TONES[index] ?? "red"}">
-          <input type="radio" name="correct-${question.id}" data-field="correctOption" data-question-id="${question.id}" value="${option.id}" ${option.id === question.correctOptionId ? "checked" : ""} aria-label="Correct answer" />
+          <input type="radio" name="correct-${escapeHtml(question.id)}" data-field="correctOption" data-question-id="${escapeHtml(question.id)}" value="${escapeHtml(option.id)}" ${option.id === question.correctOptionId ? "checked" : ""} aria-label="Correct answer" />
           <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
-          <input data-field="optionText" data-question-id="${question.id}" data-option-id="${option.id}" maxlength="140" value="${escapeHtml(option.text)}" />
+          <input data-field="optionText" data-question-id="${escapeHtml(question.id)}" data-option-id="${escapeHtml(option.id)}" maxlength="140" value="${escapeHtml(option.text)}" />
         </div>
       `).join("")}
     </div>
@@ -544,7 +545,7 @@ function renderPlayerAnswerStage(remote) {
             const optionCorrect = showResults && option.id === question.correctOptionId;
             const optionWrong = showResults && isSelected && option.id !== question.correctOptionId;
             return `
-              <button type="button" class="answer-button player-answer-button ${isSelected ? "is-selected" : ""} ${optionCorrect ? "is-correct" : ""} ${optionWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
+              <button type="button" class="answer-button player-answer-button ${isSelected ? "is-selected" : ""} ${optionCorrect ? "is-correct" : ""} ${optionWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${escapeHtml(option.id)}" ${canAnswer ? "" : "disabled"}>
                 <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
               </button>
             `;
@@ -583,7 +584,7 @@ function renderLiveQuestion(remote, isHost) {
             const isCorrect = showResults && option.id === question.correctOptionId;
             const isWrong = showResults && isSelected && option.id !== question.correctOptionId;
             return `
-              <button type="button" class="answer-button ${isSelected ? "is-selected" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
+              <button type="button" class="answer-button ${isSelected ? "is-selected" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${escapeHtml(option.id)}" ${canAnswer ? "" : "disabled"}>
                 <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
                 <strong>${escapeHtml(option.text)}</strong>
                 ${isHost || remote.phase === "results" ? `<span class="answer-count">${count}</span><span class="bar" style="transform: scaleX(${count / answerTotal})"></span>` : ""}
@@ -619,11 +620,12 @@ function renderMedia(media) {
     return "";
   }
 
+  const src = escapeHtml(media.dataUrl);
   if (media.type.startsWith("video/")) {
-    return `<video class="media-preview" src="${media.dataUrl}" controls></video>`;
+    return `<video class="media-preview" src="${src}" controls></video>`;
   }
 
-  return `<img class="media-preview" src="${media.dataUrl}" alt="" />`;
+  return `<img class="media-preview" src="${src}" alt="" />`;
 }
 
 function renderLeaderboard(players) {
@@ -715,7 +717,7 @@ async function authenticatePresenter() {
     email: state.presenterEmail,
     password: state.presenterPassword
   });
-  acceptPresenterSession(response.hostToken);
+  acceptPresenterSession();
   state.presenterPassword = "";
   showNotice("Presenter unlocked.");
   render();
@@ -791,7 +793,7 @@ async function handleGoogleCredential(result) {
       throw new Error("Google sign-in did not return a credential.");
     }
     const response = await postJson("/api/auth/google", { credential });
-    acceptPresenterSession(response.hostToken);
+    acceptPresenterSession();
     showNotice("Presenter unlocked.");
     render();
   } catch (error) {
@@ -799,9 +801,10 @@ async function handleGoogleCredential(result) {
   }
 }
 
-function acceptPresenterSession(hostToken) {
-  state.hostToken = hostToken;
-  localStorage.setItem(STORAGE_KEYS.hostToken, state.hostToken);
+function acceptPresenterSession() {
+  state.hostToken = "1";
+  localStorage.removeItem("pinboard.hostToken");
+  localStorage.setItem(STORAGE_KEYS.presenterSession, state.hostToken);
 }
 
 async function createSession() {
@@ -850,7 +853,7 @@ async function restorePlayerIfPossible() {
   state.restoreKey = restoreKey;
 
   try {
-    const response = await postJson(`/api/sessions/${pin}/resume`, { playerId: state.playerId });
+    const response = await postJson(`/api/sessions/${pin}/resume`, {});
     if (state.restoreKey !== restoreKey || state.mode !== "player") {
       return;
     }
@@ -883,7 +886,6 @@ async function submitAnswer(optionId) {
     throw new Error("Join a session before answering.");
   }
   const response = await postJson(`/api/sessions/${state.remote.pin}/answer`, {
-    playerId: state.playerId,
     optionId
   });
   state.remote = response.session;
@@ -892,9 +894,6 @@ async function submitAnswer(optionId) {
 
 async function postJson(url, payload, includeHostToken = false) {
   const headers = { "Content-Type": "application/json" };
-  if (includeHostToken) {
-    headers["X-Host-Token"] = state.hostToken;
-  }
 
   const response = await fetch(url, {
     method: "POST",
@@ -916,13 +915,6 @@ function connectEvents(pin, role, playerId) {
   }
 
   const params = new URLSearchParams({ pin, role });
-  if (role === "host") {
-    params.set("token", state.hostToken);
-  }
-
-  if (playerId) {
-    params.set("playerId", playerId);
-  }
 
   state.eventSource = new EventSource(`/events?${params.toString()}`);
   state.eventSource.addEventListener("open", () => {
@@ -995,6 +987,9 @@ async function attachMedia(target) {
 
   if (file.size > MAX_MEDIA_BYTES) {
     throw new Error("Media must be 100 MB or smaller.");
+  }
+  if (!ALLOWED_MEDIA_TYPES.has(file.type)) {
+    throw new Error("Media type is not supported.");
   }
 
   question.media = {
