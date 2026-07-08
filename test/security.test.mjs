@@ -18,6 +18,7 @@ beforeEach(() => {
   __test.googleJwksCache.expiresAt = 0;
   __test.googleJwksCache.keys = new Map();
   __test.setGoogleJwksLastRefreshAt(0);
+  __test.setRateLimitLastPrunedAt(0);
 });
 
 test("startup rejects implicit local defaults", () => {
@@ -145,8 +146,24 @@ test("proxy client address and rate limit buckets avoid shared proxy lockout and
     }),
     "203.0.113.7"
   );
+  assert.equal(
+    __test.getClientAddress({
+      headers: { forwarded: 'for="198.51.100.8";proto=https' },
+      socket: { remoteAddress: "10.0.0.2" }
+    }),
+    "198.51.100.8"
+  );
 
   const now = Date.now();
+  __test.rateLimitBuckets.set("expired", { count: 1, resetAt: now - 1 });
+  __test.rateLimitBuckets.set("active", { count: 1, resetAt: now + 60_000 });
+  __test.setRateLimitLastPrunedAt(now - 120_000);
+  __test.enforceRateLimit("fresh-before-cap", 2, 1000);
+  assert.equal(__test.rateLimitBuckets.has("expired"), false);
+  assert.equal(__test.rateLimitBuckets.has("active"), true);
+
+  __test.rateLimitBuckets.clear();
+  __test.setRateLimitLastPrunedAt(0);
   for (let index = 0; index < __test.MAX_RATE_LIMIT_BUCKETS; index += 1) {
     __test.rateLimitBuckets.set(`expired:${index}`, { count: 1, resetAt: now - 1 });
   }
@@ -214,4 +231,6 @@ test("browser no longer sends presenter bearer tokens in request URLs or headers
   assert.equal(appSource.includes('headers["X-Host-Token"]'), false);
   assert.equal(appSource.includes('localStorage.removeItem("pinboard.hostToken")'), true);
   assert.equal(appSource.includes('localStorage.setItem("pinboard.hostToken"'), false);
+  assert.equal(appSource.includes("function clearPresenterSession()"), true);
+  assert.equal(appSource.includes("isPresenterRequest(url)"), true);
 });

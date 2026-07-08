@@ -807,6 +807,18 @@ function acceptPresenterSession() {
   localStorage.setItem(STORAGE_KEYS.presenterSession, state.hostToken);
 }
 
+function clearPresenterSession() {
+  state.hostToken = "";
+  state.session = null;
+  state.remote = null;
+  localStorage.removeItem(STORAGE_KEYS.presenterSession);
+  localStorage.removeItem("pinboard.hostToken");
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+}
+
 async function createSession() {
   const payload = {
     title: state.draft.title,
@@ -903,10 +915,22 @@ async function postJson(url, payload) {
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(body.error ?? "Request failed.");
+    const message = body.error ?? "Request failed.";
+    if (response.status === 401 && isPresenterRequest(url)) {
+      clearPresenterSession();
+      state.mode = "presenter";
+      location.hash = "presenter";
+      state.notice = "Presenter session expired. Sign in again.";
+      render();
+    }
+    throw new Error(message);
   }
 
   return body;
+}
+
+function isPresenterRequest(url) {
+  return url === "/api/sessions" || /^\/api\/sessions\/\d{6}\/(?:start|open|reveal|next|end)$/.test(url);
 }
 
 function connectEvents(pin, role, playerId) {

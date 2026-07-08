@@ -35,6 +35,7 @@ const MAX_ACTIVE_SESSIONS_PER_PRESENTER = Number(process.env.MAX_ACTIVE_SESSIONS
 const MAX_SESSION_MEDIA_BYTES = Number(process.env.MAX_SESSION_MEDIA_BYTES ?? MAX_MEDIA_BYTES);
 const MAX_SERIALIZED_SESSION_BYTES = Number(process.env.MAX_SERIALIZED_SESSION_BYTES ?? Math.ceil(MAX_SESSION_MEDIA_BYTES * BASE64_EXPANSION_RATIO) + 512 * KIB);
 const MAX_RATE_LIMIT_BUCKETS = Number(process.env.MAX_RATE_LIMIT_BUCKETS ?? 5000);
+const RATE_LIMIT_PRUNE_INTERVAL_MS = Number(process.env.RATE_LIMIT_PRUNE_INTERVAL_MS ?? 60_000);
 const SSE_HEARTBEAT_MS = 25_000;
 const RECENT_PLAYER_LIMIT = 80;
 const LEADERBOARD_LIMIT = 20;
@@ -114,6 +115,7 @@ const rateLimitBuckets = new Map();
 /** @type {Map<string, number>} */
 const googleUnknownKidCache = new Map();
 let googleJwksLastRefreshAt = 0;
+let rateLimitLastPrunedAt = 0;
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -976,6 +978,7 @@ function validateStartupConfig() {
   assertPositiveInteger(MAX_SESSION_MEDIA_BYTES, "MAX_SESSION_MEDIA_BYTES");
   assertPositiveInteger(MAX_SERIALIZED_SESSION_BYTES, "MAX_SERIALIZED_SESSION_BYTES");
   assertPositiveInteger(MAX_RATE_LIMIT_BUCKETS, "MAX_RATE_LIMIT_BUCKETS");
+  assertPositiveInteger(RATE_LIMIT_PRUNE_INTERVAL_MS, "RATE_LIMIT_PRUNE_INTERVAL_MS");
 
   if (ALLOW_LOCAL_DEFAULTS && IS_PRODUCTION) {
     throw new Error("PINBOARD_ALLOW_LOCAL_DEFAULTS cannot be true when NODE_ENV=production.");
@@ -1566,20 +1569,34 @@ function readCookies(request) {
 
 function getClientAddress(request) {
   if (TRUST_PROXY) {
-    const forwarded = request.headers["x-forwarded-for"];
-    const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-    if (typeof forwardedValue === "string") {
-      const address = forwardedValue.split(",")[0]?.trim();
-      if (address) {
-        return address;
-      }
+    const forwardedFor = firstHeaderValue(request.headers["x-forwarded-for"]);
+    const address = forwardedFor ? forwardedFor.split(",")[0]?.trim() : parseForwardedFor(firstHeaderValue(request.headers.forwarded));
+    if (address) {
+      return address;
     }
   }
   return request.socket.remoteAddress ?? "unknown";
 }
 
+function firstHeaderValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function parseForwardedFor(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const firstHop = value.split(",")[0] ?? "";
+  const part = firstHop.split(";").find((item) => item.trim().toLowerCase().startsWith("for="));
+  if (!part) {
+    return "";
+  }
+  return part.slice(part.indexOf("=") + 1).trim().replace(/^"|"$/g, "");
+}
+
 function enforceRateLimit(key, limit, windowMs) {
   const now = Date.now();
+  pruneRateLimitBucketsIfNeeded(now);
   ensureRateLimitBucketCapacity(key, now);
   const current = rateLimitBuckets.get(key);
   if (!current || current.resetAt <= now) {
@@ -1589,6 +1606,12 @@ function enforceRateLimit(key, limit, windowMs) {
   current.count += 1;
   if (current.count > limit) {
     throw new HttpError(429, "Too many requests. Try again later.");
+  }
+}
+
+function pruneRateLimitBucketsIfNeeded(now) {
+  if (now - rateLimitLastPrunedAt >= RATE_LIMIT_PRUNE_INTERVAL_MS) {
+    pruneExpiredRateLimitBuckets(now);
   }
 }
 
@@ -1604,6 +1627,7 @@ function ensureRateLimitBucketCapacity(key, now) {
 }
 
 function pruneExpiredRateLimitBuckets(now = Date.now()) {
+  rateLimitLastPrunedAt = now;
   for (const [key, bucket] of rateLimitBuckets.entries()) {
     if (bucket.resetAt <= now) {
       rateLimitBuckets.delete(key);
@@ -1725,6 +1749,9 @@ export const __test = {
   normalizeOptions,
   parseDataUrl,
   rateLimitBuckets,
+  setRateLimitLastPrunedAt(value) {
+    rateLimitLastPrunedAt = value;
+  },
   serializeSessionSnapshot,
   setGoogleJwksLastRefreshAt(value) {
     googleJwksLastRefreshAt = value;
