@@ -57,6 +57,7 @@ const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
 const LOGIN_IP_RATE_LIMIT = Number(process.env.LOGIN_IP_RATE_LIMIT ?? 10);
 const LOGIN_ACCOUNT_RATE_LIMIT = Number(process.env.LOGIN_ACCOUNT_RATE_LIMIT ?? 20);
 const PIN_ACTION_RATE_LIMIT = Number(process.env.PIN_ACTION_RATE_LIMIT ?? 60);
+const PLAYER_ENTRY_RATE_LIMIT = Number(process.env.PLAYER_ENTRY_RATE_LIMIT ?? Math.max(MAX_PLAYERS_PER_SESSION, PIN_ACTION_RATE_LIMIT));
 const EVENT_STREAM_RATE_LIMIT = Number(process.env.EVENT_STREAM_RATE_LIMIT ?? 60);
 const HOST_COOKIE_NAME = "pinboard_host";
 const PLAYER_COOKIE_PREFIX = "pinboard_player_";
@@ -156,6 +157,10 @@ async function startServer() {
 async function routeRequest(request, response) {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   const clientAddress = getClientAddress(request);
+
+  if (request.method === "POST") {
+    assertTrustedRequestOrigin(request, url);
+  }
 
   if (request.method === "GET" && url.pathname === "/health") {
     sendJson(response, 200, { ok: true, database: database ? "postgres" : "memory" });
@@ -334,11 +339,11 @@ async function handleSessionAction(request, response, pin, action, clientAddress
 
   switch (action) {
     case "join":
-      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, clientAddress }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, sessionScoped: true }), PLAYER_ENTRY_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       await handleJoin(request, response, session);
       return;
     case "resume":
-      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, clientAddress }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, sessionScoped: true }), PLAYER_ENTRY_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       await handleResume(request, response, session);
       return;
     case "answer":
@@ -547,7 +552,7 @@ async function handleEventStream(request, response, url) {
   const clientAddress = getClientAddress(request);
   let playerId = null;
   if (role === "host") {
-    requireSessionHostEventToken(request, session);
+    requireSessionHostEventToken(request, session, url);
   } else {
     playerId = requireSessionPlayerToken(request, session).playerId;
   }
@@ -951,8 +956,8 @@ function requireSessionHostToken(request, session) {
   return presenter;
 }
 
-function requireSessionHostEventToken(request, session) {
-  const token = readCookies(request)[HOST_COOKIE_NAME];
+function requireSessionHostEventToken(request, session, url = null) {
+  const token = readCookies(request)[HOST_COOKIE_NAME] ?? readLegacyHostEventToken(url);
   if (!token) {
     throw new HttpError(401, "Presenter authentication is required.");
   }
@@ -961,6 +966,11 @@ function requireSessionHostEventToken(request, session) {
   if (presenter.id !== session.presenterId) {
     throw new HttpError(403, "This presenter cannot control that session.");
   }
+}
+
+function readLegacyHostEventToken(url) {
+  const token = url?.searchParams?.get("token") ?? "";
+  return token.length <= MAX_AUTH_REQUEST_BYTES ? token : "";
 }
 
 function requireSessionPlayerToken(request, session, body = null) {
@@ -1007,6 +1017,7 @@ function validateStartupConfig() {
   assertPositiveInteger(MAX_GOOGLE_UNKNOWN_KID_CACHE, "MAX_GOOGLE_UNKNOWN_KID_CACHE");
   assertPositiveInteger(PERSISTED_SESSION_QUOTA_WINDOW_MS, "PERSISTED_SESSION_QUOTA_WINDOW_MS");
   assertPositiveInteger(RATE_LIMIT_PRUNE_INTERVAL_MS, "RATE_LIMIT_PRUNE_INTERVAL_MS");
+  assertPositiveInteger(PLAYER_ENTRY_RATE_LIMIT, "PLAYER_ENTRY_RATE_LIMIT");
 
   if (ALLOW_LOCAL_DEFAULTS && IS_PRODUCTION) {
     throw new Error("PINBOARD_ALLOW_LOCAL_DEFAULTS cannot be true when NODE_ENV=production.");
@@ -1282,9 +1293,9 @@ async function getGoogleJwk(keyId) {
 function rememberUnknownGoogleKid(keyId, now = Date.now()) {
   pruneExpiredGoogleKidMisses(now);
   if (!googleUnknownKidCache.has(keyId) && googleUnknownKidCache.size >= MAX_GOOGLE_UNKNOWN_KID_CACHE) {
-    const oldestKey = googleUnknownKidCache.keys().next().value;
-    if (oldestKey) {
-      googleUnknownKidCache.delete(oldestKey);
+    const oldestKey = googleUnknownKidCache.keys().next();
+    if (!oldestKey.done) {
+      googleUnknownKidCache.delete(oldestKey.value);
     }
   }
   googleUnknownKidCache.set(keyId, now + GOOGLE_UNKNOWN_KID_TTL_MS);
@@ -1617,6 +1628,37 @@ function getClientAddress(request) {
   return request.socket.remoteAddress ?? "unknown";
 }
 
+function assertTrustedRequestOrigin(request, url) {
+  const fetchSite = firstHeaderValue(request.headers["sec-fetch-site"])?.toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    throw new HttpError(403, "Cross-origin requests are not allowed.");
+  }
+
+  const origin = firstHeaderValue(request.headers.origin);
+  if (!origin) {
+    return;
+  }
+
+  let parsedOrigin;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    throw new HttpError(403, "Cross-origin requests are not allowed.");
+  }
+
+  if (parsedOrigin.origin !== getRequestOrigin(request, url)) {
+    throw new HttpError(403, "Cross-origin requests are not allowed.");
+  }
+}
+
+function getRequestOrigin(request, url) {
+  const forwardedHost = TRUST_PROXY ? firstHeaderValue(request.headers["x-forwarded-host"]) : "";
+  const host = forwardedHost?.split(",")[0]?.trim() || firstHeaderValue(request.headers.host) || url.host;
+  const forwardedProto = TRUST_PROXY ? firstHeaderValue(request.headers["x-forwarded-proto"]) : "";
+  const protocol = forwardedProto?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "") || "http";
+  return `${protocol}://${host}`;
+}
+
 function firstHeaderValue(value) {
   return Array.isArray(value) ? value[0] : value;
 }
@@ -1648,12 +1690,15 @@ function enforceRateLimit(key, limit, windowMs) {
   }
 }
 
-function getSessionActionRateLimitKey({ pin, action, clientAddress = "", presenterId = "", playerId = "" }) {
+function getSessionActionRateLimitKey({ pin, action, clientAddress = "", presenterId = "", playerId = "", sessionScoped = false }) {
   if (playerId) {
     return `pin-action:${pin}:player:${playerId}:${action}`;
   }
   if (presenterId) {
     return `pin-action:${pin}:host:${presenterId}:${action}`;
+  }
+  if (sessionScoped) {
+    return `pin-action:${pin}:session:${action}`;
   }
   return `pin-action:${clientAddress}:${pin}:${action}`;
 }
@@ -1789,6 +1834,7 @@ export const __test = {
   HttpError,
   assertDeckResourceLimits,
   assertGooglePresenterAllowed,
+  assertTrustedRequestOrigin,
   createUniquePin,
   enforceRateLimit,
   estimateDataUrlBytes,
@@ -1807,6 +1853,7 @@ export const __test = {
   rateLimitBuckets,
   readLegacyPlayerId,
   rememberUnknownGoogleKid,
+  requireSessionHostEventToken,
   requireSessionPlayerToken,
   setRateLimitLastPrunedAt(value) {
     rateLimitLastPrunedAt = value;
@@ -1815,6 +1862,7 @@ export const __test = {
   setGoogleJwksLastRefreshAt(value) {
     googleJwksLastRefreshAt = value;
   },
+  signPresenterToken,
   signPlayerToken,
   validateStartupConfig,
   verifyPlayerToken

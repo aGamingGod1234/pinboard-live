@@ -158,22 +158,25 @@ test("unknown Google key IDs refresh after the negative-cache throttle window", 
 
 test("unknown Google key ID cache is bounded", () => {
   const now = Date.now();
+  __test.rememberUnknownGoogleKid("", now - 1);
   for (let index = 0; index < __test.MAX_GOOGLE_UNKNOWN_KID_CACHE; index += 1) {
     __test.rememberUnknownGoogleKid(`missing:${index}`, now + index);
   }
   __test.rememberUnknownGoogleKid("new-missing", now + __test.MAX_GOOGLE_UNKNOWN_KID_CACHE);
   assert.equal(__test.googleUnknownKidCache.size, __test.MAX_GOOGLE_UNKNOWN_KID_CACHE);
-  assert.equal(__test.googleUnknownKidCache.has("missing:0"), false);
+  assert.equal(__test.googleUnknownKidCache.has(""), false);
   assert.equal(__test.googleUnknownKidCache.has("new-missing"), true);
 });
 
-test("session action rate limits scope answers to player and PIN", () => {
+test("session action rate limits scope players, presenters, and session entry separately", () => {
   const firstPlayerKey = __test.getSessionActionRateLimitKey({ pin: "123456", action: "answer", playerId: "player-1" });
   const secondPlayerKey = __test.getSessionActionRateLimitKey({ pin: "123456", action: "answer", playerId: "player-2" });
-  const joinKey = __test.getSessionActionRateLimitKey({ pin: "123456", action: "join", clientAddress: "203.0.113.7" });
+  const joinKey = __test.getSessionActionRateLimitKey({ pin: "123456", action: "join", clientAddress: "203.0.113.7", sessionScoped: true });
+  const resumeKey = __test.getSessionActionRateLimitKey({ pin: "123456", action: "resume", clientAddress: "203.0.113.7", sessionScoped: true });
   assert.notEqual(firstPlayerKey, secondPlayerKey);
   assert.equal(firstPlayerKey, "pin-action:123456:player:player-1:answer");
-  assert.equal(joinKey, "pin-action:203.0.113.7:123456:join");
+  assert.equal(joinKey, "pin-action:123456:session:join");
+  assert.equal(resumeKey, "pin-action:123456:session:resume");
 });
 
 test("legacy player IDs can be exchanged for cookie-backed player identity", () => {
@@ -192,6 +195,62 @@ test("legacy player IDs can be exchanged for cookie-backed player identity", () 
 test("persisted presenter quota ignores stale session rows", () => {
   const now = Date.now();
   assert.equal(Number(__test.getPresenterSessionQuotaCutoffDate(now)), now - 6 * 60 * 60 * 1000);
+});
+
+test("presenter event streams accept legacy query tokens during cookie migration", () => {
+  const token = __test.signPresenterToken({ id: "presenter-1", email: "presenter@example.com" });
+  const url = new URL(`http://localhost/events?pin=123456&role=host&token=${encodeURIComponent(token)}`);
+  assert.doesNotThrow(() =>
+    __test.requireSessionHostEventToken(
+      { headers: {} },
+      { presenterId: "presenter-1" },
+      url
+    )
+  );
+});
+
+test("cookie-authenticated posts reject untrusted browser origins", () => {
+  const url = new URL("http://pinboard.example/api/sessions");
+  assert.doesNotThrow(() =>
+    __test.assertTrustedRequestOrigin(
+      {
+        headers: {
+          host: "pinboard.example",
+          origin: "https://pinboard.example",
+          "x-forwarded-proto": "https"
+        }
+      },
+      url
+    )
+  );
+  assert.throws(
+    () =>
+      __test.assertTrustedRequestOrigin(
+        {
+          headers: {
+            host: "pinboard.example",
+            origin: "https://evil.example",
+            "x-forwarded-proto": "https"
+          }
+        },
+        url
+      ),
+    /Cross-origin/
+  );
+  assert.throws(
+    () =>
+      __test.assertTrustedRequestOrigin(
+        {
+          headers: {
+            host: "pinboard.example",
+            "sec-fetch-site": "same-site",
+            "x-forwarded-proto": "https"
+          }
+        },
+        url
+      ),
+    /Cross-origin/
+  );
 });
 
 test("proxy client address and rate limit buckets avoid shared proxy lockout and leaks", () => {
