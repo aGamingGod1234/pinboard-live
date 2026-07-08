@@ -212,5 +212,6 @@ test("browser no longer sends presenter bearer tokens in request URLs or headers
   const appSource = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
   assert.equal(appSource.includes('params.set("token"'), false);
   assert.equal(appSource.includes('headers["X-Host-Token"]'), false);
-  assert.equal(appSource.includes("pinboard.hostToken"), true, "legacy key should only be removed, not used as storage");
+  assert.equal(appSource.includes('localStorage.removeItem("pinboard.hostToken")'), true);
+  assert.equal(appSource.includes('localStorage.setItem("pinboard.hostToken"'), false);
 });

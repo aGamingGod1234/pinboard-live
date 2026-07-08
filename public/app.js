@@ -820,7 +820,7 @@ async function createSession() {
     }))
   };
 
-  const response = await postJson("/api/sessions", payload, true);
+  const response = await postJson("/api/sessions", payload);
   state.session = response.session;
   state.remote = response.session;
   connectEvents(response.pin, "host", null);
@@ -876,7 +876,7 @@ async function hostAction(action) {
   if (!state.remote?.pin) {
     throw new Error("No hosted session is active.");
   }
-  const response = await postJson(`/api/sessions/${state.remote.pin}/${action}`, {}, true);
+  const response = await postJson(`/api/sessions/${state.remote.pin}/${action}`, {});
   state.remote = response.session;
   render();
 }
@@ -892,7 +892,7 @@ async function submitAnswer(optionId) {
   render();
 }
 
-async function postJson(url, payload, includeHostToken = false) {
+async function postJson(url, payload) {
   const headers = { "Content-Type": "application/json" };
 
   const response = await fetch(url, {
