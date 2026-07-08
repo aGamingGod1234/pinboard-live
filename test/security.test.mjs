@@ -156,6 +156,44 @@ test("unknown Google key IDs refresh after the negative-cache throttle window", 
   }
 });
 
+test("unknown Google key ID cache is bounded", () => {
+  const now = Date.now();
+  for (let index = 0; index < __test.MAX_GOOGLE_UNKNOWN_KID_CACHE; index += 1) {
+    __test.rememberUnknownGoogleKid(`missing:${index}`, now + index);
+  }
+  __test.rememberUnknownGoogleKid("new-missing", now + __test.MAX_GOOGLE_UNKNOWN_KID_CACHE);
+  assert.equal(__test.googleUnknownKidCache.size, __test.MAX_GOOGLE_UNKNOWN_KID_CACHE);
+  assert.equal(__test.googleUnknownKidCache.has("missing:0"), false);
+  assert.equal(__test.googleUnknownKidCache.has("new-missing"), true);
+});
+
+test("session action rate limits scope answers to player and PIN", () => {
+  const firstPlayerKey = __test.getSessionActionRateLimitKey({ pin: "123456", action: "answer", playerId: "player-1" });
+  const secondPlayerKey = __test.getSessionActionRateLimitKey({ pin: "123456", action: "answer", playerId: "player-2" });
+  const joinKey = __test.getSessionActionRateLimitKey({ pin: "123456", action: "join", clientAddress: "203.0.113.7" });
+  assert.notEqual(firstPlayerKey, secondPlayerKey);
+  assert.equal(firstPlayerKey, "pin-action:123456:player:player-1:answer");
+  assert.equal(joinKey, "pin-action:203.0.113.7:123456:join");
+});
+
+test("legacy player IDs can be exchanged for cookie-backed player identity", () => {
+  const session = {
+    pin: "123456",
+    players: new Map([["legacy-player", { id: "legacy-player" }]])
+  };
+  assert.deepEqual(
+    __test.requireSessionPlayerToken({ headers: {} }, session, { legacyPlayerId: "legacy-player" }),
+    { playerId: "legacy-player", migrated: true }
+  );
+  assert.equal(__test.readLegacyPlayerId({ playerId: "legacy-player" }), "legacy-player");
+  assert.equal(__test.readLegacyPlayerId({ legacyPlayerId: "../bad" }), "");
+});
+
+test("persisted presenter quota ignores stale session rows", () => {
+  const now = Date.now();
+  assert.equal(Number(__test.getPresenterSessionQuotaCutoffDate(now)), now - 6 * 60 * 60 * 1000);
+});
+
 test("proxy client address and rate limit buckets avoid shared proxy lockout and leaks", () => {
   assert.equal(
     __test.getClientAddress({
@@ -251,4 +289,5 @@ test("browser no longer sends presenter bearer tokens in request URLs or headers
   assert.equal(appSource.includes('localStorage.setItem("pinboard.hostToken"'), false);
   assert.equal(appSource.includes("function clearPresenterSession()"), true);
   assert.equal(appSource.includes("isPresenterRequest(url)"), true);
+  assert.equal(appSource.includes("legacyPlayerId: state.playerId"), true);
 });

@@ -35,6 +35,8 @@ const MAX_ACTIVE_SESSIONS_PER_PRESENTER = Number(process.env.MAX_ACTIVE_SESSIONS
 const MAX_SESSION_MEDIA_BYTES = Number(process.env.MAX_SESSION_MEDIA_BYTES ?? MAX_MEDIA_BYTES);
 const MAX_SERIALIZED_SESSION_BYTES = Number(process.env.MAX_SERIALIZED_SESSION_BYTES ?? Math.ceil(MAX_SESSION_MEDIA_BYTES * BASE64_EXPANSION_RATIO) + 512 * KIB);
 const MAX_RATE_LIMIT_BUCKETS = Number(process.env.MAX_RATE_LIMIT_BUCKETS ?? 5000);
+const MAX_GOOGLE_UNKNOWN_KID_CACHE = Number(process.env.MAX_GOOGLE_UNKNOWN_KID_CACHE ?? 1000);
+const PERSISTED_SESSION_QUOTA_WINDOW_MS = Number(process.env.PERSISTED_SESSION_QUOTA_WINDOW_MS ?? 6 * 60 * 60 * 1000);
 const RATE_LIMIT_PRUNE_INTERVAL_MS = Number(process.env.RATE_LIMIT_PRUNE_INTERVAL_MS ?? 60_000);
 const SSE_HEARTBEAT_MS = 25_000;
 const RECENT_PLAYER_LIMIT = 80;
@@ -200,8 +202,7 @@ async function routeRequest(request, response) {
 
   const actionMatch = url.pathname.match(/^\/api\/sessions\/(\d{6})\/([a-z-]+)$/);
   if (request.method === "POST" && actionMatch) {
-    enforceRateLimit(`pin-action:${clientAddress}:${actionMatch[2]}`, PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
-    await handleSessionAction(request, response, actionMatch[1], actionMatch[2]);
+    await handleSessionAction(request, response, actionMatch[1], actionMatch[2], clientAddress);
     return;
   }
 
@@ -328,37 +329,39 @@ async function handleCreateSession(request, response) {
   });
 }
 
-async function handleSessionAction(request, response, pin, action) {
+async function handleSessionAction(request, response, pin, action, clientAddress) {
   const session = await getSession(pin);
 
   switch (action) {
     case "join":
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, clientAddress }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       await handleJoin(request, response, session);
       return;
     case "resume":
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, clientAddress }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       await handleResume(request, response, session);
       return;
     case "answer":
       await handleAnswer(request, response, session);
       return;
     case "start":
-      requireSessionHostToken(request, session);
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, presenterId: requireSessionHostToken(request, session).id }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       startSession(session);
       break;
     case "open":
-      requireSessionHostToken(request, session);
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, presenterId: requireSessionHostToken(request, session).id }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       openAnswers(session);
       break;
     case "reveal":
-      requireSessionHostToken(request, session);
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, presenterId: requireSessionHostToken(request, session).id }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       revealAnswers(session);
       break;
     case "next":
-      requireSessionHostToken(request, session);
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, presenterId: requireSessionHostToken(request, session).id }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       advanceSession(session);
       break;
     case "end":
-      requireSessionHostToken(request, session);
+      enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action, presenterId: requireSessionHostToken(request, session).id }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
       endSession(session);
       break;
     default:
@@ -398,8 +401,9 @@ async function handleJoin(request, response, session) {
 
 async function handleResume(request, response, session) {
   assertPresenterOnline(session);
-  await readJson(request, MAX_PLAYER_ACTION_REQUEST_BYTES);
-  const playerId = requireSessionPlayerToken(request, session);
+  const body = await readJson(request, MAX_PLAYER_ACTION_REQUEST_BYTES);
+  const playerIdentity = requireSessionPlayerToken(request, session, body);
+  const { playerId } = playerIdentity;
 
   if (!session.players.has(playerId)) {
     throw new HttpError(404, "Player was not found in this session.");
@@ -414,7 +418,9 @@ async function handleResume(request, response, session) {
 
 async function handleAnswer(request, response, session) {
   const body = await readJson(request, MAX_PLAYER_ACTION_REQUEST_BYTES);
-  const playerId = requireSessionPlayerToken(request, session);
+  const playerIdentity = requireSessionPlayerToken(request, session, body);
+  const { playerId } = playerIdentity;
+  enforceRateLimit(getSessionActionRateLimitKey({ pin: session.pin, action: "answer", playerId }), PIN_ACTION_RATE_LIMIT, RATE_LIMIT_WINDOW_MS);
   const optionId = readString(body.optionId, "Option ID");
   const question = getCurrentQuestion(session);
 
@@ -440,6 +446,9 @@ async function handleAnswer(request, response, session) {
 
   await persistSession(session);
   broadcastState(session);
+  if (playerIdentity.migrated) {
+    setPlayerAuthCookie(response, session.pin, signPlayerToken(session.pin, playerId));
+  }
   sendJson(response, 200, {
     accepted: true,
     session: getStateForRole(session, "player", playerId)
@@ -540,7 +549,7 @@ async function handleEventStream(request, response, url) {
   if (role === "host") {
     requireSessionHostEventToken(request, session);
   } else {
-    playerId = requireSessionPlayerToken(request, session);
+    playerId = requireSessionPlayerToken(request, session).playerId;
   }
   assertEventStreamCapacity(session, clientAddress);
 
@@ -939,6 +948,7 @@ function requireSessionHostToken(request, session) {
   if (presenter.id !== session.presenterId) {
     throw new HttpError(403, "This presenter cannot control that session.");
   }
+  return presenter;
 }
 
 function requireSessionHostEventToken(request, session) {
@@ -953,17 +963,33 @@ function requireSessionHostEventToken(request, session) {
   }
 }
 
-function requireSessionPlayerToken(request, session) {
+function requireSessionPlayerToken(request, session, body = null) {
   const token = readCookies(request)[playerCookieName(session.pin)];
-  if (!token) {
-    throw new HttpError(401, "Player session authentication is required.");
+  if (token) {
+    const player = verifyPlayerToken(token);
+    if (player.pin !== session.pin || !session.players.has(player.playerId)) {
+      throw new HttpError(403, "Player session authentication is not valid for this session.");
+    }
+    return { playerId: player.playerId, migrated: false };
   }
 
-  const player = verifyPlayerToken(token);
-  if (player.pin !== session.pin || !session.players.has(player.playerId)) {
+  const legacyPlayerId = readLegacyPlayerId(body);
+  if (!legacyPlayerId) {
+    throw new HttpError(401, "Player session authentication is required.");
+  }
+  if (!session.players.has(legacyPlayerId)) {
     throw new HttpError(403, "Player session authentication is not valid for this session.");
   }
-  return player.playerId;
+  return { playerId: legacyPlayerId, migrated: true };
+}
+
+function readLegacyPlayerId(body) {
+  const value = body && typeof body === "object" ? body.legacyPlayerId ?? body.playerId : "";
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9_-]{1,128}$/.test(trimmed) ? trimmed : "";
 }
 
 function validateStartupConfig() {
@@ -978,6 +1004,8 @@ function validateStartupConfig() {
   assertPositiveInteger(MAX_SESSION_MEDIA_BYTES, "MAX_SESSION_MEDIA_BYTES");
   assertPositiveInteger(MAX_SERIALIZED_SESSION_BYTES, "MAX_SERIALIZED_SESSION_BYTES");
   assertPositiveInteger(MAX_RATE_LIMIT_BUCKETS, "MAX_RATE_LIMIT_BUCKETS");
+  assertPositiveInteger(MAX_GOOGLE_UNKNOWN_KID_CACHE, "MAX_GOOGLE_UNKNOWN_KID_CACHE");
+  assertPositiveInteger(PERSISTED_SESSION_QUOTA_WINDOW_MS, "PERSISTED_SESSION_QUOTA_WINDOW_MS");
   assertPositiveInteger(RATE_LIMIT_PRUNE_INTERVAL_MS, "RATE_LIMIT_PRUNE_INTERVAL_MS");
 
   if (ALLOW_LOCAL_DEFAULTS && IS_PRODUCTION) {
@@ -1244,11 +1272,22 @@ async function getGoogleJwk(keyId) {
     }
   }
 
-  googleUnknownKidCache.set(keyId, Date.now() + GOOGLE_UNKNOWN_KID_TTL_MS);
+  rememberUnknownGoogleKid(keyId, Date.now());
   if (!jwk) {
     throw new HttpError(401, "Google credential key is not recognized.");
   }
   return jwk;
+}
+
+function rememberUnknownGoogleKid(keyId, now = Date.now()) {
+  pruneExpiredGoogleKidMisses(now);
+  if (!googleUnknownKidCache.has(keyId) && googleUnknownKidCache.size >= MAX_GOOGLE_UNKNOWN_KID_CACHE) {
+    const oldestKey = googleUnknownKidCache.keys().next().value;
+    if (oldestKey) {
+      googleUnknownKidCache.delete(oldestKey);
+    }
+  }
+  googleUnknownKidCache.set(keyId, now + GOOGLE_UNKNOWN_KID_TTL_MS);
 }
 
 async function refreshGoogleJwks() {
@@ -1609,6 +1648,16 @@ function enforceRateLimit(key, limit, windowMs) {
   }
 }
 
+function getSessionActionRateLimitKey({ pin, action, clientAddress = "", presenterId = "", playerId = "" }) {
+  if (playerId) {
+    return `pin-action:${pin}:player:${playerId}:${action}`;
+  }
+  if (presenterId) {
+    return `pin-action:${pin}:host:${presenterId}:${action}`;
+  }
+  return `pin-action:${clientAddress}:${pin}:${action}`;
+}
+
 function pruneRateLimitBucketsIfNeeded(now) {
   if (now - rateLimitLastPrunedAt >= RATE_LIMIT_PRUNE_INTERVAL_MS) {
     pruneExpiredRateLimitBuckets(now);
@@ -1675,12 +1724,16 @@ async function assertPresenterSessionQuota(presenterId) {
   }
 
   const result = await database.query(
-    "SELECT COUNT(*)::int AS count FROM live_sessions WHERE snapshot->>'presenterId' = $1 AND COALESCE(snapshot->>'phase', '') <> 'ended'",
-    [presenterId]
+    "SELECT COUNT(*)::int AS count FROM live_sessions WHERE snapshot->>'presenterId' = $1 AND COALESCE(snapshot->>'phase', '') <> 'ended' AND updated_at >= $2",
+    [presenterId, getPresenterSessionQuotaCutoffDate()]
   );
   if (Number(result.rows[0]?.count ?? 0) >= MAX_ACTIVE_SESSIONS_PER_PRESENTER) {
     throw new HttpError(429, "Presenter has reached the active session limit.");
   }
+}
+
+function getPresenterSessionQuotaCutoffDate(now = Date.now()) {
+  return new Date(now - PERSISTED_SESSION_QUOTA_WINDOW_MS);
 }
 
 function parseCsv(value) {
@@ -1741,14 +1794,20 @@ export const __test = {
   estimateDataUrlBytes,
   getGoogleJwk,
   getClientAddress,
+  getPresenterSessionQuotaCutoffDate,
+  getSessionActionRateLimitKey,
   googleJwksCache,
   googleUnknownKidCache,
   hydrateSessionSnapshot,
+  MAX_GOOGLE_UNKNOWN_KID_CACHE,
   MAX_RATE_LIMIT_BUCKETS,
   normalizeMedia,
   normalizeOptions,
   parseDataUrl,
   rateLimitBuckets,
+  readLegacyPlayerId,
+  rememberUnknownGoogleKid,
+  requireSessionPlayerToken,
   setRateLimitLastPrunedAt(value) {
     rateLimitLastPrunedAt = value;
   },

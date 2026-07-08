@@ -865,7 +865,7 @@ async function restorePlayerIfPossible() {
   state.restoreKey = restoreKey;
 
   try {
-    const response = await postJson(`/api/sessions/${pin}/resume`, {});
+    const response = await postJson(`/api/sessions/${pin}/resume`, { legacyPlayerId: state.playerId });
     if (state.restoreKey !== restoreKey || state.mode !== "player") {
       return;
     }
@@ -898,7 +898,8 @@ async function submitAnswer(optionId) {
     throw new Error("Join a session before answering.");
   }
   const response = await postJson(`/api/sessions/${state.remote.pin}/answer`, {
-    optionId
+    optionId,
+    legacyPlayerId: state.playerId
   });
   state.remote = response.session;
   render();
