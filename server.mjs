@@ -58,6 +58,7 @@ const PIN_ACTION_RATE_LIMIT = Number(process.env.PIN_ACTION_RATE_LIMIT ?? 60);
 const EVENT_STREAM_RATE_LIMIT = Number(process.env.EVENT_STREAM_RATE_LIMIT ?? 60);
 const HOST_COOKIE_NAME = "pinboard_host";
 const PLAYER_COOKIE_PREFIX = "pinboard_player_";
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const TRUST_PROXY = process.env.TRUST_PROXY === "true" || (IS_PRODUCTION && process.env.TRUST_PROXY !== "false");
 const ALLOWED_MEDIA_TYPES = new Set([
   "image/gif",
@@ -71,7 +72,6 @@ const ALLOWED_MEDIA_TYPES = new Set([
 
 const PORT = Number(process.env.PORT ?? DEFAULT_PORT);
 const HOST = process.env.HOST ?? DEFAULT_HOST;
-const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const ALLOW_LOCAL_DEFAULTS = process.env.PINBOARD_ALLOW_LOCAL_DEFAULTS === "true";
 const AUTH_SECRET = process.env.AUTH_SECRET ?? (ALLOW_LOCAL_DEFAULTS ? DEFAULT_LOCAL_AUTH_SECRET : "");
 const BOOTSTRAP_PRESENTER_EMAIL = normalizeEmail(process.env.PRESENTER_EMAIL ?? (ALLOW_LOCAL_DEFAULTS ? DEFAULT_LOCAL_PRESENTER_EMAIL : ""));

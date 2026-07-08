@@ -34,6 +34,24 @@ test("startup rejects implicit local defaults", () => {
   );
 });
 
+test("startup does not reference production mode before proxy config initialization", () => {
+  const script = "import('./server.mjs').then(({__test})=>__test.validateStartupConfig())";
+  assert.doesNotThrow(() =>
+    execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: new URL("..", import.meta.url),
+      env: {
+        ...process.env,
+        AUTH_SECRET: "test-auth-secret-that-is-not-the-default",
+        PRESENTER_EMAIL: "presenter@example.com",
+        PRESENTER_PASSWORD: "strong-test-password",
+        GOOGLE_CLIENT_ID: "",
+        TRUST_PROXY: "false"
+      },
+      stdio: "pipe"
+    })
+  );
+});
+
 test("option IDs reject attribute metacharacters", () => {
   assert.throws(
     () =>
