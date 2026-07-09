@@ -1214,6 +1214,16 @@ label {
   font-weight: 950;
 }
 
+.stage-timer {
+  min-width: 74px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.32);
+  padding: 7px 12px;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .stage-tools button {
   min-height: 34px;
   border-color: rgba(255, 255, 255, 0.38);
@@ -1653,6 +1663,16 @@ label {
   grid-template-rows: auto auto auto auto;
 }
 
+.host-question {
+  height: 100%;
+  align-content: stretch;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.host-question:has(.presenter-question-frame) {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
 .player-question {
   padding-top: 0;
 }
@@ -1666,6 +1686,9 @@ label {
 }
 
 .current-slide h1 {
+  display: grid;
+  min-height: clamp(92px, 13dvh, 150px);
+  place-items: center;
   margin: 0;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
@@ -1673,6 +1696,7 @@ label {
   padding: clamp(12px, 2vw, 24px);
   font-size: clamp(1.7rem, 4vw, 4.2rem);
   line-height: 1.02;
+  overflow-wrap: anywhere;
   text-align: center;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
 }
@@ -1783,7 +1807,13 @@ label {
   display: grid;
   min-height: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
   gap: clamp(8px, 1.4vw, 14px);
+}
+
+.host-question .answer-grid {
+  height: 100%;
+  align-self: stretch;
 }
 
 .answer-button {
@@ -1804,6 +1834,11 @@ label {
     inset 0 0 0 2px rgba(255, 255, 255, 0.16),
     inset 0 -8px rgba(0, 0, 0, 0.24),
     0 16px 34px rgba(0, 0, 0, 0.34);
+}
+
+.host-question .answer-button {
+  min-height: 0;
+  height: 100%;
 }
 
 .answer-button:disabled {
@@ -1841,8 +1876,9 @@ label {
   min-width: 0;
   color: #fff;
   overflow-wrap: anywhere;
-  font-size: clamp(1.2rem, 2.4vw, 2.4rem);
+  font-size: clamp(1.15rem, 2.2vw, 2.4rem);
   line-height: 1.1;
+  hyphens: auto;
   text-shadow: 0 2px 0 rgba(0, 0, 0, 0.24), 0 8px 20px rgba(0, 0, 0, 0.22);
 }
 

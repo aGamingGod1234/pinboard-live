@@ -14,7 +14,10 @@ const MOTION_ENTER_MS = 440;
 const COUNT_ANIMATION_MS = 720;
 const AUTO_SAVE_INTERVAL_MS = 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15 * 1000;
+const LIVE_TIMER_INTERVAL_MS = 1000;
 const MAX_TITLE_LENGTH = 120;
+const MAX_QUESTION_TEXT_LENGTH = 120;
+const MAX_OPTION_TEXT_LENGTH = 64;
 const PRESENTATION_PATH_PREFIX = "/presentation";
 const PRESENTATION_LOGIN_PATH = `${PRESENTATION_PATH_PREFIX}/login`;
 const PRESENTATION_HOME_PATH = `${PRESENTATION_PATH_PREFIX}/homepage`;
@@ -76,7 +79,8 @@ const state = {
   eventSource: null,
   error: "",
   notice: "",
-  messageTimer: null
+  messageTimer: null,
+  liveTimerInterval: null
 };
 
 if (state.pendingPresentationId && !state.hostToken) {
@@ -301,6 +305,7 @@ function commitRender(payload, isTransition) {
 
   syncAutosaveTimer();
   requestAnimationFrame(animateCountElements);
+  syncLiveTimers();
 }
 
 function getMotionSignature(isImmersive) {
@@ -678,7 +683,7 @@ function renderQuestionEditor(question, index) {
           </select>
         </label>
         <label class="question-field question-field-text">Text
-          <textarea data-field="questionText" data-question-id="${question.id}" maxlength="500">${escapeHtml(question.text)}</textarea>
+          <textarea data-field="questionText" data-question-id="${question.id}" maxlength="${MAX_QUESTION_TEXT_LENGTH}">${escapeHtml(question.text)}</textarea>
         </label>
         <label class="question-field question-field-points">Points
           <input type="number" min="0" max="1000000" step="100" ${isSlide ? "disabled" : ""} data-field="points" data-question-id="${question.id}" value="${question.points}" />
@@ -699,7 +704,7 @@ function renderOptionEditor(question) {
         <div class="option-row" data-tone="${OPTION_TONES[index] ?? "red"}">
           <input type="radio" name="correct-${question.id}" data-field="correctOption" data-question-id="${question.id}" value="${option.id}" ${option.id === question.correctOptionId ? "checked" : ""} aria-label="Correct answer" />
           <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
-          <input data-field="optionText" data-question-id="${question.id}" data-option-id="${option.id}" maxlength="140" value="${escapeHtml(option.text)}" />
+          <input data-field="optionText" data-question-id="${question.id}" data-option-id="${option.id}" maxlength="${MAX_OPTION_TEXT_LENGTH}" value="${escapeHtml(option.text)}" />
         </div>
       `).join("")}
     </div>
@@ -882,7 +887,7 @@ function renderPlayerWaiting(remote) {
 function renderPlayerAnswerStage(remote) {
   const question = remote.currentQuestion;
   const selectedOptionId = remote.selectedOptionId;
-  const canAnswer = remote.phase === "answering" && question.kind !== "slide" && !selectedOptionId;
+  const canAnswer = isAnswerEntryOpen(remote) && !selectedOptionId;
   const isCorrect = remote.phase === "results" && selectedOptionId === question.correctOptionId;
   const earnedPoints = isCorrect ? question.points : 0;
 
@@ -923,7 +928,7 @@ function renderLiveQuestion(remote, isHost) {
   const question = remote.currentQuestion;
   const selectedOptionId = remote.selectedOptionId;
   const answerTotal = Math.max(1, Object.values(remote.answerCounts ?? {}).reduce((sum, count) => sum + count, 0));
-  const canAnswer = !isHost && remote.phase === "answering" && question.kind !== "slide" && !selectedOptionId;
+  const canAnswer = !isHost && isAnswerEntryOpen(remote) && !selectedOptionId;
   const showResults = remote.phase === "results" || remote.phase === "ended";
 
   return `
@@ -1017,6 +1022,7 @@ function renderStageBar(remote, variant) {
       <div class="stage-tools" aria-label="Host tools">
         <span class="role-badge role-badge-inline">Presenter</span>
         ${renderCount(remote.playerCount, `stage-players:${remote.pin}`)}
+        ${renderStageTimer(remote)}
         <button type="button" data-action="copy-link">Copy link</button>
         ${renderStagePrimaryButton(remote)}
         <button type="button" data-action="host-end" ${remote.phase === "ended" ? "disabled" : ""}>End</button>
@@ -1039,7 +1045,7 @@ function getStagePrimaryAction(remote) {
   const isSlide = question?.kind === "slide";
 
   if (remote.phase === "lobby") return { action: "host-start", label: "Start" };
-  if (remote.phase === "question") return isSlide ? { action: "host-next", label: "Next" } : { action: "host-open", label: "Next" };
+  if (remote.phase === "question") return isSlide ? { action: "host-next", label: "Next" } : { action: "host-open", label: "Open answers" };
   if (remote.phase === "answering") return { action: "host-reveal", label: "Reveal" };
   if (remote.phase === "results") return { action: "host-next", label: "Next" };
   return null;
@@ -1082,6 +1088,19 @@ async function authenticatePresenter() {
   state.presenterPassword = "";
   showNotice("Presenter unlocked.");
   render();
+}
+
+function renderStageTimer(remote) {
+  if (!remote.currentQuestion || remote.currentQuestion.kind === "slide" || remote.phase === "lobby" || remote.phase === "ended") {
+    return "";
+  }
+
+  if (remote.phase !== "answering" || !remote.openedAt) {
+    return `<span class="stage-timer">00:00</span>`;
+  }
+
+  const startedAt = Number(remote.openedAt);
+  return `<span class="stage-timer" data-live-timer-started-at="${startedAt}">${formatElapsedTime(Date.now() - startedAt)}</span>`;
 }
 
 async function loadPublicConfig() {
@@ -1423,15 +1442,15 @@ function clonePresentationSnapshot(snapshot) {
     return createDraft();
   }
   return {
-    title: String(snapshot.title ?? "Untitled presentation"),
+    title: limitClientText(snapshot.title ?? "Untitled presentation", MAX_TITLE_LENGTH),
     questions: snapshot.questions.map((question) => ({
       id: question.id || crypto.randomUUID(),
       kind: QUESTION_KINDS.includes(question.kind) ? question.kind : "quiz",
-      text: String(question.text ?? "Untitled question"),
+      text: limitClientText(question.text ?? "Untitled question", MAX_QUESTION_TEXT_LENGTH),
       points: Number.isFinite(Number(question.points)) ? Number(question.points) : DEFAULT_POINTS,
       options: Array.isArray(question.options) ? question.options.map((option) => ({
         id: option.id || crypto.randomUUID(),
-        text: String(option.text ?? "")
+        text: limitClientText(option.text ?? "", MAX_OPTION_TEXT_LENGTH)
       })) : createOptions(DEFAULT_OPTIONS),
       correctOptionId: question.correctOptionId ?? question.options?.[0]?.id ?? null,
       media: question.media ?? null
@@ -1661,7 +1680,8 @@ function updateFromInput(target) {
   if (field === "playerPin") state.playerPin = target.value.replace(/\D/g, "").slice(0, GAME_PIN_DIGIT_COUNT);
   if (field === "nickname") state.nickname = target.value;
   if (field === "deckTitle") {
-    state.draft.title = target.value;
+    state.draft.title = limitClientText(target.value, MAX_TITLE_LENGTH);
+    target.value = state.draft.title;
     markPresentationDirty();
   }
 
@@ -1677,12 +1697,18 @@ function updateFromInput(target) {
   if (field === "questionKind") {
     applyQuestionKind(question, target.value);
   }
-  if (field === "questionText") question.text = target.value;
+  if (field === "questionText") {
+    question.text = limitClientText(target.value, MAX_QUESTION_TEXT_LENGTH);
+    target.value = question.text;
+  }
   if (field === "points") question.points = Number(target.value);
   if (field === "correctOption") question.correctOptionId = target.value;
   if (field === "optionText") {
     const option = question.options.find((item) => item.id === optionId);
-    if (option) option.text = target.value;
+    if (option) {
+      option.text = limitClientText(target.value, MAX_OPTION_TEXT_LENGTH);
+      target.value = option.text;
+    }
   }
 
   markPresentationDirty();
@@ -1950,7 +1976,7 @@ function leavePresentationWithNotice(message) {
 }
 
 function createOptions(labels) {
-  return labels.map((text) => ({ id: crypto.randomUUID(), text }));
+  return labels.map((text) => ({ id: crypto.randomUUID(), text: limitClientText(text, MAX_OPTION_TEXT_LENGTH) }));
 }
 
 function applyQuestionKind(question, kind) {
@@ -2216,6 +2242,47 @@ function formatProgress(remote) {
 function formatQuestionLabel(question, remote) {
   const type = question.kind === "slide" ? "Slide" : `${question.points} points`;
   return `${formatProgress(remote)} - ${type}`;
+}
+
+function isAnswerEntryOpen(remote) {
+  return (remote.phase === "question" || remote.phase === "answering") && remote.currentQuestion?.kind !== "slide";
+}
+
+function limitClientText(value, maxLength) {
+  return String(value ?? "").slice(0, maxLength);
+}
+
+function syncLiveTimers() {
+  const timers = [...document.querySelectorAll("[data-live-timer-started-at]")];
+  if (!timers.length) {
+    clearLiveTimerInterval();
+    return;
+  }
+
+  const updateTimers = () => {
+    for (const timer of timers) {
+      const startedAt = Number(timer.dataset.liveTimerStartedAt);
+      timer.textContent = formatElapsedTime(Date.now() - startedAt);
+    }
+  };
+
+  clearLiveTimerInterval();
+  updateTimers();
+  state.liveTimerInterval = window.setInterval(updateTimers, LIVE_TIMER_INTERVAL_MS);
+}
+
+function clearLiveTimerInterval() {
+  if (state.liveTimerInterval) {
+    window.clearInterval(state.liveTimerInterval);
+    state.liveTimerInterval = null;
+  }
+}
+
+function formatElapsedTime(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
 }
 
 function formatPin(pin) {

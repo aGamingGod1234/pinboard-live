@@ -674,3 +674,31 @@
 
 ### Suggested Next Steps
 - Add a production smoke check that opens `/presentation/homepage` with empty browser storage and asserts it redirects to `/presentation/login`.
+
+## [2026-07-09] - Live answer flow and text fitting
+
+### What Was Implemented
+- Made scored questions answerable as soon as they appear, including existing sessions still in the question phase.
+- Added an elapsed live timer to the presenter stage while answers are open.
+- Relabeled the legacy presenter question-phase action from `Next` to `Open answers`.
+- Made presenter answer tiles stretch to fill the remaining stage height.
+- Reduced and enforced question and answer text limits in the editor and server validation.
+- Updated static asset versions so production browsers fetch the new client bundle.
+
+### Files Modified
+- `server.mjs` - answer-phase behavior, opened timer state, and shorter text validation limits.
+- `public/app.js` - answer availability, presenter timer rendering, client-side text limits, and asset-versioned live flow.
+- `public/styles.css` - presenter timer, stretched answer grid, and text wrapping/fitting.
+- `public/index.html` - static asset version bump.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- Scored questions should be answerable immediately when shown, instead of requiring a separate presenter `Open answers` step.
+- Question text should be capped at 120 characters and answer text at 64 characters.
+- The presenter timer should count elapsed answer time because no question duration setting exists yet.
+
+### Known Issues / Deferred
+- There is still no configurable countdown duration per question.
+
+### Suggested Next Steps
+- Add per-question time limits if countdown behavior is needed instead of elapsed time.

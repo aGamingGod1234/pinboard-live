@@ -21,8 +21,8 @@ const MAX_QUESTION_COUNT = 200;
 const MAX_TITLE_LENGTH = 120;
 const MAX_PRESENTER_NAME_LENGTH = 120;
 const MAX_STABLE_ID_LENGTH = 80;
-const MAX_QUESTION_TEXT_LENGTH = 500;
-const MAX_OPTION_TEXT_LENGTH = 140;
+const MAX_QUESTION_TEXT_LENGTH = 120;
+const MAX_OPTION_TEXT_LENGTH = 64;
 const MAX_NICKNAME_LENGTH = 32;
 const MAX_POINTS = 1_000_000;
 const MAX_MEDIA_BYTES = Number(process.env.MAX_QUESTION_MEDIA_BYTES ?? 100 * MIB);
@@ -453,7 +453,7 @@ async function handleAnswer(request, response, session) {
   const optionId = readString(body.optionId, "Option ID");
   const question = getCurrentQuestion(session);
 
-  if (session.phase !== "answering") {
+  if (session.phase !== "answering" && session.phase !== "question") {
     throw new HttpError(409, "Answers are not open.");
   }
 
@@ -467,6 +467,11 @@ async function handleAnswer(request, response, session) {
 
   if (!question.options.some((option) => option.id === optionId)) {
     throw new HttpError(400, "Selected option does not exist.");
+  }
+
+  if (session.phase === "question") {
+    session.phase = "answering";
+    session.openedAt = session.openedAt ?? Date.now();
   }
 
   if (!session.answers.has(playerId)) {
@@ -487,8 +492,8 @@ function startSession(session) {
   }
 
   session.currentQuestionIndex = 0;
-  session.phase = "question";
   resetCurrentAnswers(session);
+  openCurrentQuestion(session);
 }
 
 function openAnswers(session) {
@@ -536,8 +541,20 @@ function advanceSession(session) {
   }
 
   session.currentQuestionIndex = nextIndex;
-  session.phase = "question";
   resetCurrentAnswers(session);
+  openCurrentQuestion(session);
+}
+
+function openCurrentQuestion(session) {
+  const question = getCurrentQuestion(session);
+  if (question && question.kind !== "slide") {
+    session.phase = "answering";
+    session.openedAt = Date.now();
+    return;
+  }
+
+  session.phase = "question";
+  session.openedAt = null;
 }
 
 function endSession(session) {
@@ -684,6 +701,7 @@ function getStateForRole(session, role, playerId) {
     questionCount: session.questions.length,
     playerCount: session.players.size,
     answerCount: session.answers.size,
+    openedAt: session.openedAt,
     currentQuestion: question ? serializeQuestion(question, showAnswers) : null,
     answerCounts: showAnswers && question ? buildAnswerCounts(session, question) : {},
     leaderboard: buildLeaderboard(session),
