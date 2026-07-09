@@ -18,6 +18,31 @@ const LIVE_TIMER_INTERVAL_MS = 1000;
 const MAX_TITLE_LENGTH = 120;
 const MAX_QUESTION_TEXT_LENGTH = 120;
 const MAX_OPTION_TEXT_LENGTH = 64;
+const DEFAULT_TIMER_SECONDS = 30;
+const MIN_TIMER_SECONDS = 5;
+const MAX_TIMER_SECONDS = 300;
+const MUSIC_STEP_MS = 420;
+const MUSIC_MASTER_GAIN = 0.035;
+const MUSIC_PATTERNS = {
+  lobby: {
+    waveform: "triangle",
+    notes: [64, 67, 71, 67, 62, 66, 69, 66],
+    bass: [40, 40, 38, 38],
+    duration: 0.24
+  },
+  question: {
+    waveform: "square",
+    notes: [72, 76, 79, 76, 74, 77, 81, 77],
+    bass: [48, 48, 50, 50],
+    duration: 0.16
+  },
+  intermission: {
+    waveform: "sine",
+    notes: [67, 71, 74, 71, 64, 67, 72, 67],
+    bass: [43, 43, 45, 45],
+    duration: 0.32
+  }
+};
 const PRESENTATION_PATH_PREFIX = "/presentation";
 const PRESENTATION_LOGIN_PATH = `${PRESENTATION_PATH_PREFIX}/login`;
 const PRESENTATION_HOME_PATH = `${PRESENTATION_PATH_PREFIX}/homepage`;
@@ -80,7 +105,15 @@ const state = {
   error: "",
   notice: "",
   messageTimer: null,
-  liveTimerInterval: null
+  liveTimerInterval: null,
+  presenterMusic: {
+    context: null,
+    master: null,
+    interval: null,
+    mode: "",
+    step: 0,
+    enabled: true
+  }
 };
 
 if (state.pendingPresentationId && !state.hostToken) {
@@ -134,6 +167,7 @@ document.addEventListener("click", async (event) => {
   const action = button.dataset.action;
   try {
     clearMessages();
+    unlockPresenterMusic();
 
     if (action === "go-home") {
       await navigateMode("home");
@@ -306,6 +340,7 @@ function commitRender(payload, isTransition) {
   syncAutosaveTimer();
   requestAnimationFrame(animateCountElements);
   syncLiveTimers();
+  syncPresenterMusic();
 }
 
 function getMotionSignature(isImmersive) {
@@ -688,6 +723,9 @@ function renderQuestionEditor(question, index) {
         <label class="question-field question-field-points">Points
           <input type="number" min="0" max="1000000" step="100" ${isSlide ? "disabled" : ""} data-field="points" data-question-id="${question.id}" value="${question.points}" />
         </label>
+        <label class="question-field question-field-timer">Timer
+          <input type="number" min="${MIN_TIMER_SECONDS}" max="${MAX_TIMER_SECONDS}" step="5" ${isSlide ? "disabled" : ""} data-field="timerSeconds" data-question-id="${question.id}" value="${normalizeClientTimerSeconds(question.timerSeconds)}" />
+        </label>
         <button type="button" class="ghost remove-question" data-action="remove-question" data-question-id="${question.id}" ${state.draft.questions.length === 1 ? "disabled" : ""}>Remove</button>
       </div>
       ${mediaLabel}
@@ -1046,7 +1084,7 @@ function getStagePrimaryAction(remote) {
 
   if (remote.phase === "lobby") return { action: "host-start", label: "Start" };
   if (remote.phase === "question") return isSlide ? { action: "host-next", label: "Next" } : { action: "host-open", label: "Open answers" };
-  if (remote.phase === "answering") return { action: "host-reveal", label: "Reveal" };
+  if (remote.phase === "answering") return { action: "host-reveal", label: "Skip timer" };
   if (remote.phase === "results") return { action: "host-next", label: "Next" };
   return null;
 }
@@ -1095,12 +1133,14 @@ function renderStageTimer(remote) {
     return "";
   }
 
+  const durationMs = getQuestionTimerDurationMs(remote.currentQuestion);
   if (remote.phase !== "answering" || !remote.openedAt) {
-    return `<span class="stage-timer">00:00</span>`;
+    return `<span class="stage-timer">${formatCountdownTime(durationMs)}</span>`;
   }
 
   const startedAt = Number(remote.openedAt);
-  return `<span class="stage-timer" data-live-timer-started-at="${startedAt}">${formatElapsedTime(Date.now() - startedAt)}</span>`;
+  const remainingMs = getQuestionTimerRemainingMs(startedAt, durationMs);
+  return `<span class="stage-timer" data-live-timer-started-at="${startedAt}" data-live-timer-duration-ms="${durationMs}">${formatCountdownTime(remainingMs)}</span>`;
 }
 
 async function loadPublicConfig() {
@@ -1448,6 +1488,7 @@ function clonePresentationSnapshot(snapshot) {
       kind: QUESTION_KINDS.includes(question.kind) ? question.kind : "quiz",
       text: limitClientText(question.text ?? "Untitled question", MAX_QUESTION_TEXT_LENGTH),
       points: Number.isFinite(Number(question.points)) ? Number(question.points) : DEFAULT_POINTS,
+      timerSeconds: question.kind === "slide" ? 0 : normalizeClientTimerSeconds(question.timerSeconds),
       options: Array.isArray(question.options) ? question.options.map((option) => ({
         id: option.id || crypto.randomUUID(),
         text: limitClientText(option.text ?? "", MAX_OPTION_TEXT_LENGTH)
@@ -1466,6 +1507,7 @@ function serializeDraftForSave() {
       kind: question.kind,
       text: question.text,
       points: question.kind === "slide" ? 0 : Number(question.points),
+      timerSeconds: question.kind === "slide" ? 0 : normalizeClientTimerSeconds(question.timerSeconds),
       options: question.kind === "slide" ? [] : question.options,
       correctOptionId: isScoredQuestionKind(question.kind) ? question.correctOptionId : null,
       media: question.media
@@ -1491,6 +1533,7 @@ async function createSession() {
       kind: question.kind,
       text: question.text,
       points: question.kind === "slide" ? 0 : Number(question.points),
+      timerSeconds: question.kind === "slide" ? 0 : normalizeClientTimerSeconds(question.timerSeconds),
       options: question.kind === "slide" ? [] : question.options,
       correctOptionId: isScoredQuestionKind(question.kind) ? question.correctOptionId : null,
       media: question.media
@@ -1702,6 +1745,10 @@ function updateFromInput(target) {
     target.value = question.text;
   }
   if (field === "points") question.points = Number(target.value);
+  if (field === "timerSeconds") {
+    question.timerSeconds = normalizeClientTimerSeconds(target.value);
+    target.value = question.timerSeconds;
+  }
   if (field === "correctOption") question.correctOptionId = target.value;
   if (field === "optionText") {
     const option = question.options.find((item) => item.id === optionId);
@@ -1953,6 +2000,7 @@ function createQuestion() {
     kind: "quiz",
     text: "Untitled question",
     points: DEFAULT_POINTS,
+    timerSeconds: DEFAULT_TIMER_SECONDS,
     options,
     correctOptionId: options[0].id,
     media: null
@@ -1988,6 +2036,7 @@ function applyQuestionKind(question, kind) {
 
   if (kind === "slide") {
     question.points = 0;
+    question.timerSeconds = 0;
     question.correctOptionId = null;
     return;
   }
@@ -1996,6 +2045,7 @@ function applyQuestionKind(question, kind) {
     question.options = createOptions(TRUE_FALSE_OPTIONS);
     question.correctOptionId = question.options[0].id;
     question.points = question.points > 0 ? question.points : DEFAULT_POINTS;
+    question.timerSeconds = question.timerSeconds > 0 ? normalizeClientTimerSeconds(question.timerSeconds) : DEFAULT_TIMER_SECONDS;
     return;
   }
 
@@ -2004,6 +2054,7 @@ function applyQuestionKind(question, kind) {
   }
 
   question.points = question.points > 0 ? question.points : DEFAULT_POINTS;
+  question.timerSeconds = question.timerSeconds > 0 ? normalizeClientTimerSeconds(question.timerSeconds) : DEFAULT_TIMER_SECONDS;
   if (!question.options.some((option) => option.id === question.correctOptionId)) {
     question.correctOptionId = question.options[0]?.id ?? null;
   }
@@ -2252,6 +2303,22 @@ function limitClientText(value, maxLength) {
   return String(value ?? "").slice(0, maxLength);
 }
 
+function normalizeClientTimerSeconds(value) {
+  const timerSeconds = Number(value ?? DEFAULT_TIMER_SECONDS);
+  if (!Number.isInteger(timerSeconds)) {
+    return DEFAULT_TIMER_SECONDS;
+  }
+  return Math.min(MAX_TIMER_SECONDS, Math.max(MIN_TIMER_SECONDS, timerSeconds));
+}
+
+function getQuestionTimerDurationMs(question) {
+  return normalizeClientTimerSeconds(question?.timerSeconds) * 1000;
+}
+
+function getQuestionTimerRemainingMs(startedAt, durationMs) {
+  return Math.max(0, durationMs - Math.max(0, Date.now() - startedAt));
+}
+
 function syncLiveTimers() {
   const timers = [...document.querySelectorAll("[data-live-timer-started-at]")];
   if (!timers.length) {
@@ -2262,7 +2329,8 @@ function syncLiveTimers() {
   const updateTimers = () => {
     for (const timer of timers) {
       const startedAt = Number(timer.dataset.liveTimerStartedAt);
-      timer.textContent = formatElapsedTime(Date.now() - startedAt);
+      const durationMs = Number(timer.dataset.liveTimerDurationMs);
+      timer.textContent = formatCountdownTime(getQuestionTimerRemainingMs(startedAt, durationMs));
     }
   };
 
@@ -2278,11 +2346,119 @@ function clearLiveTimerInterval() {
   }
 }
 
-function formatElapsedTime(milliseconds) {
+function formatCountdownTime(milliseconds) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
   const seconds = String(totalSeconds % 60).padStart(2, "0");
   return `${minutes}:${seconds}`;
+}
+
+function unlockPresenterMusic() {
+  if (state.mode !== "presenter" || !state.hostToken || !state.presenterMusic.enabled) {
+    return;
+  }
+
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) {
+    return;
+  }
+
+  if (!state.presenterMusic.context) {
+    const context = new AudioContextCtor();
+    const master = context.createGain();
+    master.gain.value = MUSIC_MASTER_GAIN;
+    master.connect(context.destination);
+    state.presenterMusic.context = context;
+    state.presenterMusic.master = master;
+  }
+
+  if (state.presenterMusic.context.state !== "running") {
+    void state.presenterMusic.context.resume().then(syncPresenterMusic).catch(() => {});
+  }
+}
+
+function syncPresenterMusic() {
+  const mode = getPresenterMusicMode();
+  if (!mode || !state.presenterMusic.enabled) {
+    stopPresenterMusic();
+    return;
+  }
+
+  if (!state.presenterMusic.context || state.presenterMusic.context.state !== "running") {
+    return;
+  }
+
+  if (state.presenterMusic.mode !== mode) {
+    state.presenterMusic.mode = mode;
+    state.presenterMusic.step = 0;
+  }
+
+  if (!state.presenterMusic.interval) {
+    playPresenterMusicStep();
+    state.presenterMusic.interval = window.setInterval(playPresenterMusicStep, MUSIC_STEP_MS);
+  }
+}
+
+function getPresenterMusicMode() {
+  if (state.mode !== "presenter" || !state.hostToken || !state.session || !state.remote) {
+    return "";
+  }
+
+  if (state.remote.phase === "lobby") return "lobby";
+  if (state.remote.phase === "question" || state.remote.phase === "answering") return "question";
+  if (state.remote.phase === "results" || state.remote.phase === "ended") return "intermission";
+  return "";
+}
+
+function stopPresenterMusic() {
+  if (state.presenterMusic.interval) {
+    window.clearInterval(state.presenterMusic.interval);
+    state.presenterMusic.interval = null;
+  }
+  state.presenterMusic.mode = "";
+  state.presenterMusic.step = 0;
+}
+
+function playPresenterMusicStep() {
+  const music = state.presenterMusic;
+  const pattern = MUSIC_PATTERNS[music.mode];
+  if (!music.context || !music.master || !pattern) {
+    stopPresenterMusic();
+    return;
+  }
+
+  const step = music.step;
+  const note = pattern.notes[step % pattern.notes.length];
+  const bass = pattern.bass[Math.floor(step / 4) % pattern.bass.length];
+  const now = music.context.currentTime;
+  playInstrumentTone(noteToFrequency(note), now, pattern.duration, pattern.waveform, 0.82);
+  if (step % 4 === 0) {
+    playInstrumentTone(noteToFrequency(bass), now, 0.34, "sine", 0.55);
+  }
+  music.step += 1;
+}
+
+function playInstrumentTone(frequency, startTime, duration, waveform, volume) {
+  const music = state.presenterMusic;
+  if (!music.context || !music.master) {
+    return;
+  }
+
+  const oscillator = music.context.createOscillator();
+  const envelope = music.context.createGain();
+  oscillator.type = waveform;
+  oscillator.frequency.setValueAtTime(frequency, startTime);
+  envelope.gain.setValueAtTime(0.0001, startTime);
+  envelope.gain.exponentialRampToValueAtTime(volume, startTime + 0.025);
+  envelope.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+  oscillator.connect(envelope);
+  envelope.connect(music.master);
+  oscillator.start(startTime);
+  oscillator.stop(startTime + duration + 0.04);
+}
+
+function noteToFrequency(note) {
+  return 440 * (2 ** ((note - 69) / 12));
 }
 
 function formatPin(pin) {

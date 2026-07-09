@@ -23,6 +23,9 @@ const MAX_PRESENTER_NAME_LENGTH = 120;
 const MAX_STABLE_ID_LENGTH = 80;
 const MAX_QUESTION_TEXT_LENGTH = 120;
 const MAX_OPTION_TEXT_LENGTH = 64;
+const DEFAULT_TIMER_SECONDS = 30;
+const MIN_TIMER_SECONDS = 5;
+const MAX_TIMER_SECONDS = 300;
 const MAX_NICKNAME_LENGTH = 32;
 const MAX_POINTS = 1_000_000;
 const MAX_MEDIA_BYTES = Number(process.env.MAX_QUESTION_MEDIA_BYTES ?? 100 * MIB);
@@ -58,7 +61,7 @@ const { Pool } = pg;
 /** @typedef {"quiz" | "true_false" | "slide"} QuestionKind */
 /** @typedef {{ id: string, text: string }} Option */
 /** @typedef {{ name: string, type: string, size: number, dataUrl: string }} MediaAsset */
-/** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, options: Option[], correctOptionId: string | null, media: MediaAsset | null }} Question */
+/** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, timerSeconds: number, options: Option[], correctOptionId: string | null, media: MediaAsset | null }} Question */
 /** @typedef {{ id: string, nickname: string, score: number, joinedAt: number }} Player */
 /** @typedef {{ optionId: string, answeredAt: number }} Answer */
 /** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, heartbeat: NodeJS.Timeout }} Client */
@@ -81,6 +84,7 @@ const localPresentersByEmail = new Map();
 const localPresentationsById = new Map();
 /** @type {Map<string, Session>} */
 const sessions = new Map();
+const timerHandlesByPin = new Map();
 /** @type {{ expiresAt: number, keys: Map<string, JsonWebKey> }} */
 const googleJwksCache = { expiresAt: 0, keys: new Map() };
 
@@ -389,7 +393,7 @@ async function handleSessionAction(request, response, pin, action) {
       break;
     case "reveal":
       requireSessionHostToken(request, session);
-      revealAnswers(session);
+      revealAnswers(session, "manual");
       break;
     case "next":
       requireSessionHostToken(request, session);
@@ -472,6 +476,7 @@ async function handleAnswer(request, response, session) {
   if (session.phase === "question") {
     session.phase = "answering";
     session.openedAt = session.openedAt ?? Date.now();
+    scheduleQuestionTimer(session);
   }
 
   if (!session.answers.has(playerId)) {
@@ -509,9 +514,10 @@ function openAnswers(session) {
 
   session.phase = "answering";
   session.openedAt = Date.now();
+  scheduleQuestionTimer(session);
 }
 
-function revealAnswers(session) {
+function revealAnswers(session, reason = "manual") {
   const question = getCurrentQuestion(session);
 
   if (session.phase !== "answering" && session.phase !== "question") {
@@ -522,6 +528,7 @@ function revealAnswers(session) {
     throw new HttpError(409, "Slides do not have answer results.");
   }
 
+  clearQuestionTimer(session);
   scoreCurrentQuestion(session, question);
   session.phase = "results";
 }
@@ -550,22 +557,74 @@ function openCurrentQuestion(session) {
   if (question && question.kind !== "slide") {
     session.phase = "answering";
     session.openedAt = Date.now();
+    scheduleQuestionTimer(session);
     return;
   }
 
+  clearQuestionTimer(session);
   session.phase = "question";
   session.openedAt = null;
 }
 
 function endSession(session) {
+  clearQuestionTimer(session);
   session.phase = "ended";
   session.openedAt = null;
   session.endedReason = "host_ended";
 }
 
 function resetCurrentAnswers(session) {
+  clearQuestionTimer(session);
   session.answers = new Map();
   session.openedAt = null;
+}
+
+function scheduleQuestionTimer(session) {
+  clearQuestionTimer(session);
+  const question = getCurrentQuestion(session);
+  if (session.phase !== "answering" || !question || question.kind === "slide" || !session.openedAt) {
+    return;
+  }
+
+  const remainingMs = getQuestionRemainingMs(session, question);
+  const timeout = setTimeout(() => {
+    void revealQuestionAfterTimer(session.pin);
+  }, Math.max(0, remainingMs));
+  timerHandlesByPin.set(session.pin, timeout);
+}
+
+function clearQuestionTimer(session) {
+  const timeout = timerHandlesByPin.get(session.pin);
+  if (timeout) {
+    clearTimeout(timeout);
+    timerHandlesByPin.delete(session.pin);
+  }
+}
+
+function getQuestionRemainingMs(session, question) {
+  const durationMs = getQuestionDurationMs(question);
+  return durationMs - Math.max(0, Date.now() - Number(session.openedAt ?? 0));
+}
+
+function getQuestionDurationMs(question) {
+  return coerceTimerSeconds(question.timerSeconds) * 1000;
+}
+
+async function revealQuestionAfterTimer(pin) {
+  const session = await getSession(pin);
+  if (!session || session.phase !== "answering") {
+    return;
+  }
+
+  const question = getCurrentQuestion(session);
+  if (!question || question.kind === "slide" || getQuestionRemainingMs(session, question) > 0) {
+    scheduleQuestionTimer(session);
+    return;
+  }
+
+  revealAnswers(session, "timer");
+  await persistSession(session);
+  broadcastState(session);
 }
 
 function scoreCurrentQuestion(session, question) {
@@ -719,6 +778,7 @@ function serializeQuestion(question, showAnswers) {
     kind: question.kind,
     text: question.text,
     points: question.points,
+    timerSeconds: question.timerSeconds,
     media: question.media,
     options: question.options,
     correctOptionId: showAnswers ? question.correctOptionId : null
@@ -863,6 +923,7 @@ function normalizePresentationQuestion(input, index) {
       kind,
       text,
       points: 0,
+      timerSeconds: 0,
       options: [],
       correctOptionId: null,
       media
@@ -871,6 +932,7 @@ function normalizePresentationQuestion(input, index) {
 
   const options = normalizePresentationOptions(input.options);
   const points = normalizePoints(input.points);
+  const timerSeconds = normalizeTimerSeconds(input.timerSeconds);
   const correctOptionId = readString(input.correctOptionId, `Item ${index + 1} correct option`);
 
   if (kind === "true_false" && options.length !== 2) {
@@ -886,6 +948,7 @@ function normalizePresentationQuestion(input, index) {
     kind,
     text,
     points,
+    timerSeconds,
     options,
     correctOptionId,
     media
@@ -922,6 +985,7 @@ function normalizeQuestion(input, index) {
       kind,
       text,
       points: 0,
+      timerSeconds: 0,
       options: [],
       correctOptionId: null,
       media
@@ -930,6 +994,7 @@ function normalizeQuestion(input, index) {
 
   const options = normalizeOptions(input.options);
   const points = normalizePoints(input.points);
+  const timerSeconds = normalizeTimerSeconds(input.timerSeconds);
   const correctOptionId = readString(input.correctOptionId, `Item ${index + 1} correct option`);
 
   if (kind === "true_false" && options.length !== 2) {
@@ -945,6 +1010,7 @@ function normalizeQuestion(input, index) {
     kind,
     text,
     points,
+    timerSeconds,
     options,
     correctOptionId,
     media
@@ -987,6 +1053,21 @@ function normalizePoints(value) {
     throw new HttpError(400, `Points must be an integer from 0 to ${MAX_POINTS}.`);
   }
   return points;
+}
+
+function normalizeTimerSeconds(value) {
+  const timerSeconds = Number(value ?? DEFAULT_TIMER_SECONDS);
+  if (!Number.isInteger(timerSeconds) || timerSeconds < MIN_TIMER_SECONDS || timerSeconds > MAX_TIMER_SECONDS) {
+    throw new HttpError(400, `Timer must be an integer from ${MIN_TIMER_SECONDS} to ${MAX_TIMER_SECONDS} seconds.`);
+  }
+  return timerSeconds;
+}
+
+function coerceTimerSeconds(value) {
+  const timerSeconds = Number(value);
+  return Number.isInteger(timerSeconds) && timerSeconds >= MIN_TIMER_SECONDS && timerSeconds <= MAX_TIMER_SECONDS
+    ? timerSeconds
+    : DEFAULT_TIMER_SECONDS;
 }
 
 function normalizeMedia(input) {
@@ -1446,6 +1527,7 @@ function createBlankPresentationSnapshot() {
         kind: "quiz",
         text: "Untitled question",
         points: 1000,
+        timerSeconds: DEFAULT_TIMER_SECONDS,
         options,
         correctOptionId: options[0].id,
         media: null
@@ -1697,6 +1779,7 @@ async function getSession(pin) {
   if (!session) {
     throw new HttpError(404, "Session was not found.");
   }
+  scheduleQuestionTimer(session);
   return session;
 }
 

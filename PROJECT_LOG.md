@@ -702,3 +702,30 @@
 
 ### Suggested Next Steps
 - Add per-question time limits if countdown behavior is needed instead of elapsed time.
+
+## [2026-07-09] - Configurable timers and presenter music
+
+### What Was Implemented
+- Added per-question timer configuration in the editor with a 30 second default and 5-300 second range.
+- Persisted `timerSeconds` through presentation saves, live session creation, serialization, and legacy deck defaults.
+- Changed the presenter timer from elapsed time to a countdown and added server-side auto-reveal when the timer reaches zero.
+- Relabeled the answering control to `Skip timer`, which immediately reveals results.
+- Added presenter-only generated instrumental background music with separate lobby, question, and intermission patterns.
+
+### Files Modified
+- `server.mjs` - timer validation, live countdown scheduling, auto-reveal, and serialized timer state.
+- `public/app.js` - editor timer input, countdown display, skip-timer label, presenter-only instrumental Web Audio generator, and asset version bump.
+- `public/styles.css` - editor grid update for the timer field.
+- `public/index.html` - static asset version bump.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- Timer is per question, not global per deck.
+- Slides do not use timers.
+- Presenter music should be synthesized locally as instrumental loops with no lyrics, avoiding external audio licensing and API-key dependencies.
+
+### Known Issues / Deferred
+- The generated music has no user-facing volume/mute control yet.
+
+### Suggested Next Steps
+- Add a presenter music toggle or volume slider if the default background music should be adjustable during live hosting.

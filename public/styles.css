@@ -1090,7 +1090,7 @@ label {
 
 .question-head {
   display: grid;
-  grid-template-columns: minmax(130px, 0.78fr) minmax(260px, 2.4fr) minmax(120px, 0.75fr) auto;
+  grid-template-columns: minmax(130px, 0.7fr) minmax(260px, 2.3fr) minmax(110px, 0.65fr) minmax(110px, 0.65fr) auto;
   gap: 12px;
   align-items: end;
 }
