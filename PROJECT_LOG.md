@@ -649,3 +649,28 @@
 
 ### Suggested Next Steps
 - Add a tracked smoke test for expired presenter tokens once the project has a stable Playwright browser runtime.
+
+## [2026-07-09] - Presenter homepage stuck loading fix
+
+### What Was Implemented
+- Diagnosed the live Chrome tab showing `Loading projects` with no saved presenter token in browser storage.
+- Redirected unauthenticated presenter homepage visits to `/presentation/login` instead of leaving them on the dashboard loading shell.
+- Added a visible `Sign in again` recovery control to the presenter loading screen.
+- Versioned the static CSS/JS asset URLs and added `Cache-Control: no-store` to static responses so Chrome fetches fresh deployed code.
+
+### Files Modified
+- `public/index.html` - versioned static asset URLs.
+- `public/app.js` - unauthenticated presenter route redirect and loading-screen recovery action.
+- `public/styles.css` - loading recovery control layout.
+- `server.mjs` - no-store cache headers for static SPA assets.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- An unauthenticated visit to `/presentation/homepage` should land on `/presentation/login`, matching the presenter login route requirement.
+- Static assets should not be browser-cached aggressively while this prototype is changing quickly.
+
+### Known Issues / Deferred
+- No server-side issue was visible in the current Chrome tab; the failure was consistent with cached client code or stale client state.
+
+### Suggested Next Steps
+- Add a production smoke check that opens `/presentation/homepage` with empty browser storage and asserts it redirects to `/presentation/login`.

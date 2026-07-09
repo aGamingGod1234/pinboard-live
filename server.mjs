@@ -72,6 +72,7 @@ const staticRoutes = new Map([
   ["/styles.css", { path: new URL("./public/styles.css", import.meta.url), type: "text/css; charset=utf-8" }],
   ["/app.js", { path: new URL("./public/app.js", import.meta.url), type: "text/javascript; charset=utf-8" }]
 ]);
+const STATIC_CACHE_CONTROL = "no-store";
 
 const database = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL }) : null;
 /** @type {Map<string, Presenter>} */
@@ -750,7 +751,10 @@ async function serveStatic(response, pathname) {
   }
 
   const file = await readFile(route.path);
-  response.writeHead(200, { "Content-Type": route.type });
+  response.writeHead(200, {
+    "Content-Type": route.type,
+    "Cache-Control": STATIC_CACHE_CONTROL
+  });
   response.end(file);
 }
 

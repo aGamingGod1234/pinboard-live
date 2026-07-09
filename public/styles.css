@@ -653,6 +653,20 @@ label {
   line-height: 0.98;
 }
 
+.loading-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.loading-recovery p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.86);
+  font-weight: 850;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(220px, 310px) minmax(0, 1fr);

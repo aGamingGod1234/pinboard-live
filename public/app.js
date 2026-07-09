@@ -84,6 +84,10 @@ if (state.pendingPresentationId && !state.hostToken) {
   updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
 }
 
+if (state.mode === "presenter" && !state.hostToken && !isPresentationLoginPath()) {
+  updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
+}
+
 state.activeQuestionId = state.draft.questions[0]?.id ?? "";
 render();
 void loadPublicConfig();
@@ -155,6 +159,10 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "delete-presentation") {
       await deletePresentation(button.dataset.presentationId);
+      return;
+    }
+    if (action === "reset-presenter-session") {
+      resetPresenterSession();
       return;
     }
     if (action === "save-presentation") await savePresentation();
@@ -479,6 +487,10 @@ function renderPresenterLoading() {
           <div>
             <p class="eyebrow">Presenter</p>
             <h1>Loading projects</h1>
+            <div class="loading-recovery">
+              <p>Still loading?</p>
+              <button class="glass-pill" type="button" data-action="reset-presenter-session">Sign in again</button>
+            </div>
           </div>
         </div>
       </div>
@@ -1810,6 +1822,13 @@ function signOutPresenter() {
   render();
 }
 
+function resetPresenterSession() {
+  clearPresenterSession();
+  state.notice = "Sign in again to load your presentations.";
+  updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
+  render();
+}
+
 function clearPresenterSession() {
   if (state.eventSource) {
     state.eventSource.close();
@@ -2077,6 +2096,9 @@ function syncRouteStateFromLocation() {
 
   if (nextMode === "presenter" && route.presentationId && !state.hostToken) {
     sessionStorage.setItem(STORAGE_KEYS.pendingPresentationId, route.presentationId);
+    updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
+  }
+  if (nextMode === "presenter" && !route.presentationId && !state.hostToken && !isPresentationLoginPath()) {
     updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
   }
 
