@@ -625,3 +625,26 @@
 ### Suggested Next Steps
 - Add a tracked Playwright smoke script once browser binaries are installed or a project-level browser runtime is standardized.
 - Replace browser prompt/confirm with an in-app modal if rename/delete flows need a more polished production interaction.
+
+## [2026-07-09] - Presenter loading recovery and join pill fix
+
+### What Was Implemented
+- Added a timeout to JSON API requests so stalled presenter restore calls cannot leave the dashboard on `Loading projects` forever.
+- Changed presenter restore failure to clear the stored presenter token, redirect to `/presentation/login`, and show a clear sign-in-again notice.
+- Changed the root Join page route pill to display only `Join page`, without the `/` path line.
+- Increased the route pill label size and removed forced uppercase so the top-right Join page button reads like a normal control.
+
+### Files Modified
+- `public/app.js` - request timeout, presenter restore recovery, and root route pill rendering.
+- `public/styles.css` - route pill typography.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- A failed presenter restore should return the user to `/presentation/login` instead of retrying indefinitely in place.
+- The root join page does not need to show `/` because the user requested the control text be just `Join page`.
+
+### Known Issues / Deferred
+- The production Google sign-in flow still needs live browser validation after deployment because local email/password bootstrap is not configured for the Railway production environment.
+
+### Suggested Next Steps
+- Add a tracked smoke test for expired presenter tokens once the project has a stable Playwright browser runtime.

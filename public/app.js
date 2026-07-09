@@ -13,6 +13,7 @@ const MOTION_EXIT_MS = 130;
 const MOTION_ENTER_MS = 440;
 const COUNT_ANIMATION_MS = 720;
 const AUTO_SAVE_INTERVAL_MS = 60 * 1000;
+const REQUEST_TIMEOUT_MS = 15 * 1000;
 const MAX_TITLE_LENGTH = 120;
 const PRESENTATION_PATH_PREFIX = "/presentation";
 const PRESENTATION_LOGIN_PATH = `${PRESENTATION_PATH_PREFIX}/login`;
@@ -393,10 +394,11 @@ function renderHome() {
 
 function renderPageLink(label, path) {
   const normalizedPath = path || "/";
+  const shouldShowPath = normalizedPath !== "/";
   return `
     <a class="page-link-pill" href="${escapeHtml(normalizedPath)}" aria-label="${escapeHtml(label)}">
       <span>${escapeHtml(label)}</span>
-      <code>${escapeHtml(normalizedPath)}</code>
+      ${shouldShowPath ? `<code>${escapeHtml(normalizedPath)}</code>` : ""}
     </a>
   `;
 }
@@ -1176,8 +1178,10 @@ async function restorePresenterIfPossible() {
       updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
     }
     render();
-  } catch {
+  } catch (error) {
     clearPresenterSession();
+    state.notice = "Sign in again to load your presentations.";
+    updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
     render();
   } finally {
     state.presenterLoading = false;
@@ -1556,11 +1560,25 @@ async function requestJson(method, url, payload, includeHostToken = false) {
     headers["X-Host-Token"] = state.hostToken;
   }
 
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: payload === null ? undefined : JSON.stringify(payload)
-  });
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      body: payload === null ? undefined : JSON.stringify(payload),
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {

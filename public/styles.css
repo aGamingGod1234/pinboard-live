@@ -417,10 +417,10 @@ label {
 }
 
 .page-link-pill span {
-  font-size: 0.68rem;
+  font-size: 0.84rem;
   font-weight: 950;
   line-height: 1;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .page-link-pill code {
