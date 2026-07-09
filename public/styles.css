@@ -416,11 +416,26 @@ label {
   backdrop-filter: blur(18px);
 }
 
+.page-link-pill.is-root-link {
+  display: inline-flex;
+  min-width: 104px;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.16);
+  padding: 0 16px;
+}
+
 .page-link-pill span {
   font-size: 0.84rem;
   font-weight: 950;
   line-height: 1;
   text-transform: none;
+}
+
+.page-link-pill.is-root-link span {
+  font-size: 0.9rem;
 }
 
 .page-link-pill code {
@@ -436,10 +451,10 @@ label {
 
 .glass-pill {
   display: inline-flex;
-  min-height: 36px;
+  min-height: 42px;
   align-items: center;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.94);
   color: #1d1d24;
   padding: 0 14px;

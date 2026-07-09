@@ -395,8 +395,9 @@ function renderHome() {
 function renderPageLink(label, path) {
   const normalizedPath = path || "/";
   const shouldShowPath = normalizedPath !== "/";
+  const rootClass = normalizedPath === "/" ? " is-root-link" : "";
   return `
-    <a class="page-link-pill" href="${escapeHtml(normalizedPath)}" aria-label="${escapeHtml(label)}">
+    <a class="page-link-pill${rootClass}" href="${escapeHtml(normalizedPath)}" aria-label="${escapeHtml(label)}">
       <span>${escapeHtml(label)}</span>
       ${shouldShowPath ? `<code>${escapeHtml(normalizedPath)}</code>` : ""}
     </a>

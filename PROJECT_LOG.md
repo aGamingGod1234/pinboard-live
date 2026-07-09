@@ -633,10 +633,11 @@
 - Changed presenter restore failure to clear the stored presenter token, redirect to `/presentation/login`, and show a clear sign-in-again notice.
 - Changed the root Join page route pill to display only `Join page`, without the `/` path line.
 - Increased the route pill label size and removed forced uppercase so the top-right Join page button reads like a normal control.
+- Restyled the top-right root controls as rectangular text buttons instead of small icon-like pills.
 
 ### Files Modified
 - `public/app.js` - request timeout, presenter restore recovery, and root route pill rendering.
-- `public/styles.css` - route pill typography.
+- `public/styles.css` - route pill typography and top-right action control shape.
 - `PROJECT_LOG.md` - task record.
 
 ### Assumptions Made (flag these for review)
