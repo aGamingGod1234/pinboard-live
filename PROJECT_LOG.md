@@ -709,6 +709,7 @@
 - Added per-question timer configuration in the editor with a 30 second default and 5-300 second range.
 - Persisted `timerSeconds` through presentation saves, live session creation, serialization, and legacy deck defaults.
 - Changed the presenter timer from elapsed time to a countdown and added server-side auto-reveal when the timer reaches zero.
+- Hid the countdown outside active question timing so results do not show a stale timer value.
 - Relabeled the answering control to `Skip timer`, which immediately reveals results.
 - Added presenter-only generated instrumental background music with separate lobby, question, and intermission patterns.
 

@@ -1129,7 +1129,7 @@ async function authenticatePresenter() {
 }
 
 function renderStageTimer(remote) {
-  if (!remote.currentQuestion || remote.currentQuestion.kind === "slide" || remote.phase === "lobby" || remote.phase === "ended") {
+  if (!remote.currentQuestion || remote.currentQuestion.kind === "slide" || remote.phase === "lobby" || remote.phase === "results" || remote.phase === "ended") {
     return "";
   }
 
