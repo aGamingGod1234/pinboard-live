@@ -5,19 +5,61 @@ const TRUE_FALSE_OPTIONS = ["True", "False"];
 const QUESTION_KINDS = ["quiz", "true_false", "slide"];
 const OPTION_TONES = ["red", "blue", "gold", "green", "purple", "teal"];
 const OPTION_SHAPES = ["triangle", "diamond", "circle", "square", "star", "hexagon"];
+const GAME_PIN_DIGIT_COUNT = 6;
+const FORMATTED_PIN_MAX_LENGTH = 7;
 const LIVE_RECONNECT_NOTICE = "Live connection is retrying.";
 const MESSAGE_AUTO_DISMISS_MS = 4200;
+const MOTION_EXIT_MS = 130;
+const MOTION_ENTER_MS = 440;
+const COUNT_ANIMATION_MS = 720;
+const AUTO_SAVE_INTERVAL_MS = 60 * 1000;
+const MAX_TITLE_LENGTH = 120;
+const PRESENTATION_PATH_PREFIX = "/presentation";
+const PRESENTATION_LOGIN_PATH = `${PRESENTATION_PATH_PREFIX}/login`;
+const PRESENTATION_HOME_PATH = `${PRESENTATION_PATH_PREFIX}/homepage`;
+const PREVIEW_TONE_CLASSES = ["preview-tone-blue", "preview-tone-red", "preview-tone-gold", "preview-tone-green", "preview-tone-purple", "preview-tone-teal"];
+const PREVIEW_TONE_RULES = [
+  { tone: "preview-tone-teal", words: ["science", "lab", "biology", "chemistry", "physics", "medical", "health"] },
+  { tone: "preview-tone-blue", words: ["math", "number", "data", "code", "tech", "software", "screenshot"] },
+  { tone: "preview-tone-gold", words: ["history", "geography", "culture", "world", "lesson"] },
+  { tone: "preview-tone-green", words: ["business", "product", "prod", "sales", "startup", "market"] },
+  { tone: "preview-tone-red", words: ["art", "design", "color", "music", "media"] },
+  { tone: "preview-tone-purple", words: ["quiz", "game", "trivia", "challenge"] }
+];
 const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const STORAGE_KEYS = {
   hostToken: "pinboard.hostToken",
+  keepSignedIn: "pinboard.keepSignedIn",
   playerId: "pinboard.playerId",
-  playerPin: "pinboard.playerPin"
+  playerPin: "pinboard.playerPin",
+  pendingPresentationId: "pinboard.pendingPresentationId"
 };
 
 const app = document.querySelector("#app");
+const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+const motionQueue = {
+  busy: false,
+  pending: null,
+  lastSignature: ""
+};
+const numberMemory = new Map();
 const state = {
   mode: getInitialMode(),
-  hostToken: localStorage.getItem(STORAGE_KEYS.hostToken) ?? "",
+  hostToken: readStoredHostToken(),
+  keepSignedIn: localStorage.getItem(STORAGE_KEYS.keepSignedIn) !== "false",
+  presenter: null,
+  presenterLoading: false,
+  presentations: [],
+  presentationsLoaded: false,
+  presentationsLoading: false,
+  activePresentationId: "",
+  activePresentationUpdatedAt: "",
+  pendingPresentationId: getPresentationRouteId(),
+  managementMenuId: "",
+  presentationDirty: false,
+  savingPresentation: false,
+  lastSavedAt: "",
+  autosaveTimer: null,
   playerId: localStorage.getItem(STORAGE_KEYS.playerId) ?? "",
   playerPin: getHashParam("pin") ?? localStorage.getItem(STORAGE_KEYS.playerPin) ?? "",
   presenterEmail: "",
@@ -36,29 +78,19 @@ const state = {
   messageTimer: null
 };
 
+if (state.pendingPresentationId && !state.hostToken) {
+  sessionStorage.setItem(STORAGE_KEYS.pendingPresentationId, state.pendingPresentationId);
+  updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
+}
+
 state.activeQuestionId = state.draft.questions[0]?.id ?? "";
 render();
 void loadPublicConfig();
 void restorePlayerIfPossible();
+void restorePresenterIfPossible();
 
-window.addEventListener("hashchange", () => {
-  const nextMode = getInitialMode();
-  const hashPin = getHashParam("pin");
-  const nextPin = normalizeStoredPin(hashPin);
-  const currentPin = normalizeStoredPin(state.playerPin);
-
-  if (nextMode === "player" && nextPin && nextPin !== currentPin) {
-    state.playerId = "";
-    state.remote = null;
-    state.restoreKey = "";
-    localStorage.removeItem(STORAGE_KEYS.playerId);
-  }
-
-  state.mode = nextMode;
-  state.playerPin = hashPin ?? state.playerPin;
-  render();
-  void restorePlayerIfPossible();
-});
+window.addEventListener("hashchange", syncRouteStateFromLocation);
+window.addEventListener("popstate", syncRouteStateFromLocation);
 
 document.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -94,9 +126,39 @@ document.addEventListener("click", async (event) => {
   try {
     clearMessages();
 
-    if (action === "go-home") setMode("home");
-    if (action === "go-presenter") setMode("presenter");
-    if (action === "go-player") setMode("player");
+    if (action === "go-home") {
+      await navigateMode("home");
+      return;
+    }
+    if (action === "go-presenter") {
+      await navigateMode("presenter");
+      return;
+    }
+    if (action === "go-player") {
+      await navigateMode("player");
+      return;
+    }
+    if (action === "create-presentation") await createPresentation();
+    if (action === "open-presentation") await openPresentation(button.dataset.presentationId);
+    if (action === "toggle-presentation-menu") {
+      togglePresentationMenu(button.dataset.presentationId);
+      return;
+    }
+    if (action === "rename-presentation") {
+      await renamePresentation(button.dataset.presentationId);
+      return;
+    }
+    if (action === "duplicate-presentation") {
+      await duplicatePresentation(button.dataset.presentationId);
+      return;
+    }
+    if (action === "delete-presentation") {
+      await deletePresentation(button.dataset.presentationId);
+      return;
+    }
+    if (action === "save-presentation") await savePresentation();
+    if (action === "back-to-projects") await backToProjects();
+    if (action === "sign-out-presenter") signOutPresenter();
     if (action === "add-question") addQuestion();
     if (action === "select-question") selectQuestion(button.dataset.questionId);
     if (action === "remove-question") removeQuestion(button.dataset.questionId);
@@ -140,25 +202,85 @@ document.addEventListener("change", async (event) => {
   }
 });
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    void flushAutosave();
+  }
+});
+
 function render() {
+  motionQueue.pending = buildRenderPayload();
+  void flushMotionQueue();
+}
+
+function buildRenderPayload() {
   const isImmersive = shouldUseImmersiveShell();
-  app.className = `app-shell ${isImmersive ? "app-shell-immersive" : ""}`;
-  app.innerHTML = `
+  const signature = getMotionSignature(isImmersive);
+  return {
+    isImmersive,
+    signature,
+    html: `
     ${isImmersive ? "" : renderTopbar()}
     <main class="${isImmersive ? "stage-view" : "view"}">
-      <div class="message-layer" data-message-layer>${renderMessages()}</div>
-      ${state.mode === "presenter" ? renderPresenter() : ""}
-      ${state.mode === "player" ? renderPlayer() : ""}
-      ${state.mode === "home" ? renderHome() : ""}
+      <div class="motion-page" data-motion-page data-motion-key="${escapeHtml(signature)}">
+        <div class="message-layer" data-message-layer>${renderMessages()}</div>
+        ${state.mode === "presenter" ? renderPresenter() : ""}
+        ${state.mode === "player" ? renderPlayer() : ""}
+        ${state.mode === "home" ? renderHome() : ""}
+      </div>
     </main>
-  `;
+  `
+  };
+}
 
-  if (isImmersive) {
+async function flushMotionQueue() {
+  if (motionQueue.busy) {
+    return;
+  }
+
+  motionQueue.busy = true;
+
+  while (motionQueue.pending) {
+    const payload = motionQueue.pending;
+    motionQueue.pending = null;
+    const shouldTransition = shouldTransitionTo(payload.signature);
+
+    if (shouldTransition) {
+      app.classList.add("app-shell-exiting");
+      await delay(MOTION_EXIT_MS);
+      if (motionQueue.pending) {
+        continue;
+      }
+    }
+
+    commitRender(payload, shouldTransition);
+  }
+
+  motionQueue.busy = false;
+}
+
+function shouldTransitionTo(signature) {
+  return Boolean(motionQueue.lastSignature && motionQueue.lastSignature !== signature && !reducedMotionQuery.matches);
+}
+
+function commitRender(payload, isTransition) {
+  const transitionClass = isTransition ? " app-shell-entering" : "";
+  app.className = `app-shell ${payload.isImmersive ? "app-shell-immersive" : ""}${transitionClass}`;
+  app.innerHTML = payload.html;
+  motionQueue.lastSignature = payload.signature;
+
+  if (isTransition) {
+    window.setTimeout(() => {
+      app.classList.remove("app-shell-entering");
+    }, MOTION_ENTER_MS);
+  }
+
+  if (payload.isImmersive) {
     requestAnimationFrame(() => window.scrollTo(0, 0));
-    if (state.mode === "presenter" && state.hostToken && !state.session) {
+    if (state.mode === "presenter" && state.hostToken && state.activePresentationId && !state.session) {
       requestAnimationFrame(syncCreatorScrollTracking);
     }
-  } else if (state.mode === "presenter" && state.hostToken && !state.session) {
+  } else if (state.mode === "presenter" && state.hostToken && state.activePresentationId && !state.session) {
     requestAnimationFrame(syncCreatorScrollTracking);
   }
 
@@ -167,6 +289,72 @@ function render() {
       void syncGoogleSignInButton();
     });
   }
+
+  syncAutosaveTimer();
+  requestAnimationFrame(animateCountElements);
+}
+
+function getMotionSignature(isImmersive) {
+  const remote = state.remote;
+  const role = state.mode === "presenter"
+    ? state.session ? "host" : state.hostToken ? state.activePresentationId ? "creator" : "dashboard" : "login"
+    : state.mode === "player" && state.playerId ? "player-live" : state.mode;
+  const questionId = remote?.currentQuestion?.id ?? "none";
+  const questionIndex = remote?.currentQuestionIndex ?? -1;
+  const phase = remote?.phase ?? "none";
+  return [isImmersive ? "immersive" : "standard", state.mode, role, state.activePresentationId || "none", remote?.pin ?? "none", phase, questionIndex, questionId].join("|");
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function renderCount(value, key, className = "", tagName = "span") {
+  const numberValue = Number(value) || 0;
+  const classAttribute = className ? ` class="${escapeHtml(className)}"` : "";
+  return `<${tagName}${classAttribute} data-count-key="${escapeHtml(key)}" data-count-value="${numberValue}">${numberValue}</${tagName}>`;
+}
+
+function animateCountElements() {
+  const countElements = document.querySelectorAll("[data-count-value]");
+
+  for (const element of countElements) {
+    const key = element.dataset.countKey ?? "";
+    const toValue = Number(element.dataset.countValue ?? "0") || 0;
+    const fromValue = numberMemory.has(key) ? Number(numberMemory.get(key)) || 0 : toValue;
+    numberMemory.set(key, toValue);
+
+    if (reducedMotionQuery.matches || fromValue === toValue) {
+      element.textContent = String(toValue);
+      continue;
+    }
+
+    animateNumber(element, fromValue, toValue);
+  }
+}
+
+function animateNumber(element, fromValue, toValue) {
+  const start = performance.now();
+  element.classList.add("is-counting");
+
+  function step(timestamp) {
+    const elapsed = timestamp - start;
+    const progress = Math.min(1, elapsed / COUNT_ANIMATION_MS);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const rawValue = fromValue + ((toValue - fromValue) * eased);
+    const currentValue = toValue > fromValue ? Math.ceil(rawValue) : Math.floor(rawValue);
+    element.textContent = String(currentValue);
+
+    if (progress < 1) {
+      requestAnimationFrame(step);
+      return;
+    }
+
+    element.textContent = String(toValue);
+    element.classList.remove("is-counting");
+  }
+
+  requestAnimationFrame(step);
 }
 
 function shouldUseImmersiveShell() {
@@ -203,6 +391,16 @@ function renderHome() {
   return renderJoinScreen(true);
 }
 
+function renderPageLink(label, path) {
+  const normalizedPath = path || "/";
+  return `
+    <a class="page-link-pill" href="${escapeHtml(normalizedPath)}" aria-label="${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
+      <code>${escapeHtml(normalizedPath)}</code>
+    </a>
+  `;
+}
+
 function renderPresenter() {
   if (!state.hostToken) {
     return renderPresenterLogin();
@@ -212,6 +410,14 @@ function renderPresenter() {
     return renderHostConsole();
   }
 
+  if (!state.presenter) {
+    return renderPresenterLoading();
+  }
+
+  if (!state.activePresentationId) {
+    return renderPresenterDashboard();
+  }
+
   return renderCreator();
 }
 
@@ -219,12 +425,13 @@ function renderJoinScreen(showPresenterLink = false) {
   return `
     <section class="shader-screen shader-purple join-screen" data-motion-trigger="ambient-drift">
       <div class="screen-action-row">
+        ${renderPageLink("Join page", "/")}
         <button class="glass-pill" type="button" data-action="go-presenter">Presenter</button>
       </div>
       <div class="join-center">
         <div class="play-wordmark" aria-label="Pinboard Live">Pinboard<span>!</span></div>
         <form class="join-card" data-action="join">
-          <input class="pin-input" name="pin" inputmode="numeric" maxlength="6" placeholder="Game PIN" value="${escapeHtml(state.playerPin)}" data-field="playerPin" aria-label="Game PIN" />
+          <input class="pin-input" name="pin" inputmode="numeric" maxlength="${FORMATTED_PIN_MAX_LENGTH}" placeholder="Game PIN" value="${escapeHtml(state.playerPin)}" data-field="playerPin" aria-label="Game PIN" />
           <input class="nickname-input" name="nickname" maxlength="32" placeholder="Nickname" value="${escapeHtml(state.nickname)}" data-field="nickname" aria-label="Nickname" />
           <button class="join-submit" type="submit">Enter</button>
         </form>
@@ -240,32 +447,161 @@ function renderJoinScreen(showPresenterLink = false) {
 function renderPresenterLogin() {
   return `
     <section class="shader-screen shader-management presenter-login-shell" data-motion-trigger="ambient-drift">
+      <div class="screen-action-row">
+        ${renderPageLink("Presenter login", PRESENTATION_LOGIN_PATH)}
+      </div>
       <div class="login-panel presenter-login-card stack">
         <div>
           <p class="eyebrow">Presenter</p>
           <h1 class="panel-title">Sign in to Pinboard</h1>
-          <p class="muted">Create decks, edit questions, and host live sessions.</p>
+          <p class="muted">Use Google to create, save, and host your presentations.</p>
         </div>
+        <label class="keep-signed-row">
+          <input type="checkbox" data-field="keepSignedIn" ${state.keepSignedIn ? "checked" : ""} />
+          <span>Keep me signed in</span>
+        </label>
         <div class="google-signin-slot" data-google-signin>
           ${state.googleClientId ? `<button class="google-login-button" type="button" disabled>Loading Google sign-in...</button>` : `<button class="google-login-button" type="button" disabled>Google sign-in is not configured</button>`}
         </div>
-        <details class="fallback-login">
-          <summary>Email/password fallback</summary>
-          <form class="stack" data-action="auth">
-        <label>Email <input type="email" autocomplete="username" data-field="presenterEmail" value="${escapeHtml(state.presenterEmail)}" /></label>
-        <label>Password <input type="password" autocomplete="current-password" data-field="presenterPassword" value="${escapeHtml(state.presenterPassword)}" /></label>
-        <button type="submit">Unlock</button>
-          </form>
-        </details>
       </div>
     </section>
   `;
+}
+
+function renderPresenterLoading() {
+  return `
+    <section class="shader-screen shader-management presenter-dashboard" data-motion-trigger="ambient-drift">
+      <div class="dashboard-shell">
+        <div class="dashboard-header">
+          <div>
+            <p class="eyebrow">Presenter</p>
+            <h1>Loading projects</h1>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderPresenterDashboard() {
+  const displayName = state.presenter?.name || state.presenter?.email || "Presenter";
+  const presentations = state.presentationsLoaded ? state.presentations : [];
+
+  return `
+    <section class="shader-screen shader-management presenter-dashboard" data-motion-trigger="ambient-drift">
+      <div class="dashboard-shell">
+        <header class="dashboard-header">
+          <div>
+            <p class="eyebrow">Presenter projects</p>
+            <h1>Welcome back, ${escapeHtml(displayName)}</h1>
+            ${renderPageLink("Presentation home", PRESENTATION_HOME_PATH)}
+          </div>
+          <button class="ghost" type="button" data-action="sign-out-presenter">Sign out</button>
+        </header>
+        <div class="dashboard-grid">
+          <button class="presentation-tile create-presentation-tile" type="button" data-action="create-presentation">
+            ${renderPresentationTitleCard({ title: "Untitled presentation", text: "Blank draft" })}
+            <span class="presentation-tile-text">
+              <strong>Creating new presentation</strong>
+              <small>Start from a blank draft.</small>
+            </span>
+          </button>
+          <section class="previous-presentations" aria-labelledby="previous-presentations-title">
+            <div class="previous-presentations-head">
+              <h2 id="previous-presentations-title">View your previous presentations</h2>
+              ${state.presentationsLoading ? `<span>Loading</span>` : `<span>${presentations.length}</span>`}
+            </div>
+            ${presentations.length ? `
+              <div class="presentation-grid">
+                ${presentations.map(renderPresentationTile).join("")}
+              </div>
+            ` : `
+              <div class="empty-presentations">
+                ${state.presentationsLoaded ? "Saved presentations will appear here." : "Loading saved presentations."}
+              </div>
+            `}
+          </section>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderPresentationTile(presentation) {
+  const menuIsOpen = state.managementMenuId === presentation.id;
+  return `
+    <article class="presentation-tile presentation-tile-managed">
+      <button class="presentation-open" type="button" data-action="open-presentation" data-presentation-id="${escapeHtml(presentation.id)}">
+        ${renderPresentationTitleCard(presentation.titleCard ?? { title: presentation.title, text: "" })}
+        <span class="presentation-tile-text">
+          <strong>${escapeHtml(presentation.title || "Untitled presentation")}</strong>
+          <small>${escapeHtml(formatPresentationMeta(presentation))}</small>
+        </span>
+      </button>
+      <div class="presentation-menu-wrap">
+        <button class="presentation-menu-button" type="button" data-action="toggle-presentation-menu" data-presentation-id="${escapeHtml(presentation.id)}" aria-label="Presentation actions" aria-expanded="${menuIsOpen ? "true" : "false"}">...</button>
+        ${menuIsOpen ? `
+          <div class="presentation-menu" role="menu">
+            <button type="button" role="menuitem" data-action="rename-presentation" data-presentation-id="${escapeHtml(presentation.id)}">Rename</button>
+            <button type="button" role="menuitem" data-action="duplicate-presentation" data-presentation-id="${escapeHtml(presentation.id)}">Duplicate</button>
+            <button class="danger-menu-item" type="button" role="menuitem" data-action="delete-presentation" data-presentation-id="${escapeHtml(presentation.id)}">Delete</button>
+          </div>
+        ` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderPresentationTitleCard(card) {
+  const toneClass = getPreviewToneClass(card);
+  return `
+    <span class="presentation-title-card ${escapeHtml(toneClass)}" aria-hidden="true">
+      <span class="presentation-preview-kicker">${escapeHtml(getPreviewKicker(card))}</span>
+      <strong>${escapeHtml(card.title || "Untitled presentation")}</strong>
+      <small>${escapeHtml(card.text || "Blank draft")}</small>
+    </span>
+  `;
+}
+
+function getPreviewToneClass(card) {
+  const source = `${card?.title ?? ""} ${card?.text ?? ""}`.toLowerCase();
+  const matchedRule = PREVIEW_TONE_RULES.find((rule) => rule.words.some((word) => source.includes(word)));
+  if (matchedRule) {
+    return matchedRule.tone;
+  }
+
+  let hash = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    hash = (hash + source.charCodeAt(index) * (index + 1)) % PREVIEW_TONE_CLASSES.length;
+  }
+  return PREVIEW_TONE_CLASSES[hash];
+}
+
+function getPreviewKicker(card) {
+  const kind = typeof card?.kind === "string" ? card.kind : "";
+  if (kind && QUESTION_KINDS.includes(kind)) {
+    return getQuestionTypeLabel(kind);
+  }
+  return "Deck preview";
 }
 
 function renderCreator() {
   return `
     <section class="shader-screen shader-management creator-page" data-motion-trigger="ambient-drift">
       <form class="creator-shell" data-action="create-session">
+        <div class="editor-topbar panel">
+          <button type="button" class="ghost" data-action="back-to-projects">Back to projects</button>
+          <div class="editor-title-block">
+            <p class="eyebrow">Presentation editor</p>
+            <h1>${escapeHtml(state.draft.title || "Untitled presentation")}</h1>
+            <p class="save-status">${escapeHtml(getSaveStatusText())}</p>
+            ${renderPageLink("Presentation link", getPresentationPath(state.activePresentationId))}
+          </div>
+          <div class="editor-actions">
+            <button type="button" class="secondary" data-action="save-presentation" ${state.savingPresentation ? "disabled" : ""}>Save</button>
+            <button type="submit">Host live</button>
+          </div>
+        </div>
         <aside class="creator-rail panel">
           <div class="panel-header">
             <h1 class="panel-title">Create</h1>
@@ -283,10 +619,11 @@ function renderCreator() {
         </aside>
         <div class="creator-main stack" data-creator-main>
           <div class="panel deck-panel">
-            <label>Deck title <input data-field="deckTitle" maxlength="120" value="${escapeHtml(state.draft.title)}" /></label>
+            <label>Deck title <input data-field="deckTitle" maxlength="${MAX_TITLE_LENGTH}" value="${escapeHtml(state.draft.title)}" /></label>
           </div>
           ${state.draft.questions.map(renderQuestionEditor).join("")}
           <div class="panel creator-launch">
+            <button type="button" class="secondary" data-action="save-presentation" ${state.savingPresentation ? "disabled" : ""}>Save draft</button>
             <button type="submit">Host live</button>
           </div>
         </div>
@@ -365,7 +702,9 @@ function renderHostConsole() {
 
 function renderHostLobby(remote) {
   const joinLink = getJoinLink(remote.pin);
-  const publicJoinPath = `${location.host}${location.pathname}#player`;
+  const publicJoinPath = `${location.host}/#player`;
+  const hasPlayers = remote.playerCount > 0;
+  const participantLabel = `${remote.playerCount} participant${remote.playerCount === 1 ? "" : "s"} joined`;
 
   return `
     <section class="shader-screen shader-blue host-lobby" data-motion-trigger="ambient-drift">
@@ -387,11 +726,13 @@ function renderHostLobby(remote) {
       </div>
       <div class="lobby-center">
         <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span><em>live</em></div>
-        <div class="waiting-pill">Waiting for participants<span class="waiting-dots" aria-hidden="true"></span></div>
+        <div class="waiting-pill" aria-live="polite">
+          ${hasPlayers ? escapeHtml(participantLabel) : `Waiting for participants<span class="waiting-dots" aria-hidden="true"></span>`}
+        </div>
+        ${renderParticipantList(remote)}
       </div>
       <div class="participant-dock">
-        <div class="dock-stat"><span>Players</span><strong>${remote.playerCount}</strong></div>
-        ${renderParticipantList(remote)}
+        <div class="dock-stat"><span>Players</span>${renderCount(remote.playerCount, `host-lobby-players:${remote.pin}`, "", "strong")}</div>
       </div>
     </section>
   `;
@@ -410,13 +751,15 @@ function renderPresenterStage(remote) {
 
 function renderPresenterStageBody(remote, question) {
   if (remote.phase === "ended") {
-    return renderPodium(remote.leaderboard);
+    return renderPodium(remote.leaderboard, remote.pin);
   }
 
   if (remote.phase === "results") {
     return `
-      ${question ? renderLiveQuestion(remote, true) : renderLobby(remote)}
-      ${renderLeaderboardBreak(remote)}
+      <div class="results-stack">
+        ${question ? renderLiveQuestion(remote, true) : renderLobby(remote)}
+        ${renderLeaderboardBreak(remote)}
+      </div>
     `;
   }
 
@@ -466,7 +809,7 @@ function renderLeaderboardBreak(remote) {
         <p class="eyebrow">Leaderboard</p>
         <h2>Current scores</h2>
       </div>
-      ${renderLeaderboard(remote.leaderboard)}
+      ${renderLeaderboard(remote.leaderboard, `leaderboard:${remote.pin}`)}
       <div class="leaderboard-callouts">
         <span>Highest climber: ${escapeHtml(remote.leaderboard[0]?.nickname ?? "Waiting")}</span>
         <span>Best streak: ${escapeHtml(remote.leaderboard[1]?.nickname ?? remote.leaderboard[0]?.nickname ?? "Waiting")}</span>
@@ -475,7 +818,7 @@ function renderLeaderboardBreak(remote) {
   `;
 }
 
-function renderPodium(players) {
+function renderPodium(players, pin = "podium") {
   const top = [...players].slice(0, 3);
   const first = top[0];
   const second = top[1];
@@ -486,20 +829,21 @@ function renderPodium(players) {
       <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span></div>
       <h1>Final podium</h1>
       <div class="podium-steps">
-        ${renderPodiumPlace(second, 2)}
-        ${renderPodiumPlace(first, 1)}
-        ${renderPodiumPlace(third, 3)}
+        ${renderPodiumPlace(second, 2, pin)}
+        ${renderPodiumPlace(first, 1, pin)}
+        ${renderPodiumPlace(third, 3, pin)}
       </div>
     </section>
   `;
 }
 
-function renderPodiumPlace(player, place) {
+function renderPodiumPlace(player, place, pin) {
+  const playerKey = player?.id ?? player?.nickname ?? `empty-${place}`;
   return `
     <div class="podium-place podium-place-${place}">
       <strong>${place}</strong>
       <span>${escapeHtml(player?.nickname ?? "Empty")}</span>
-      <em>${player?.score ?? 0}</em>
+      ${renderCount(player?.score ?? 0, `podium:${pin}:${place}:${playerKey}`, "", "em")}
     </div>
   `;
 }
@@ -513,8 +857,8 @@ function renderPlayerWaiting(remote) {
         <p class="eyebrow">PIN ${formatPin(remote.pin)}</p>
         <h1>You're in</h1>
         <p>${escapeHtml(remote.me?.nickname ?? "Player")} - wait for the presenter to start.</p>
-        <div class="dock-stat"><span>Players</span><strong>${remote.playerCount}</strong></div>
-        <div class="dock-stat"><span>Score</span><strong>${remote.me?.score ?? 0}</strong></div>
+        <div class="dock-stat"><span>Players</span>${renderCount(remote.playerCount, `player-lobby-players:${remote.pin}`, "", "strong")}</div>
+        <div class="dock-stat"><span>Score</span>${renderCount(remote.me?.score ?? 0, `player-lobby-score:${state.playerId ?? "player"}`, "", "strong")}</div>
       </div>
     </section>
   `;
@@ -553,7 +897,7 @@ function renderPlayerAnswerStage(remote) {
       `}
       <div class="player-score-dock">
         <strong>${escapeHtml(remote.me?.nickname ?? "Player")}</strong>
-        <span>${remote.me?.score ?? 0}</span>
+        ${renderCount(remote.me?.score ?? 0, `player-score:${state.playerId ?? "player"}`)}
         ${earnedPoints ? `<em>+${earnedPoints}</em>` : ""}
       </div>
     </section>
@@ -571,7 +915,7 @@ function renderLiveQuestion(remote, isHost) {
     <section class="current-slide live-question ${isHost ? "host-question" : "player-question"}">
       <div class="question-meta-row">
         <span>${formatQuestionLabel(question, remote)}</span>
-        <strong>${remote.answerCount} answers</strong>
+        <strong>${renderCount(remote.answerCount, `answers:${remote.pin}:${question.id}`)} answers</strong>
       </div>
       <h1>${escapeHtml(question.text)}</h1>
       ${isHost ? renderPresenterQuestionFrame(question, remote) : `<div class="question-media-frame">${renderMedia(question.media)}</div>`}
@@ -586,7 +930,7 @@ function renderLiveQuestion(remote, isHost) {
               <button type="button" class="answer-button ${isSelected ? "is-selected" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
                 <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
                 <strong>${escapeHtml(option.text)}</strong>
-                ${isHost || remote.phase === "results" ? `<span class="answer-count">${count}</span><span class="bar" style="transform: scaleX(${count / answerTotal})"></span>` : ""}
+                ${isHost || remote.phase === "results" ? `${renderCount(count, `option:${remote.pin}:${question.id}:${option.id}`, "answer-count")}<span class="bar" style="transform: scaleX(${count / answerTotal})"></span>` : ""}
               </button>
             `;
           }).join("")}
@@ -607,7 +951,7 @@ function renderPresenterQuestionFrame(question, remote) {
         ${renderMedia(question.media)}
       </div>
       <div class="host-answer-meter">
-        <strong>${remote.answerCount}</strong>
+        ${renderCount(remote.answerCount, `host-meter:${remote.pin}:${question.id}`, "", "strong")}
         <span>Answers</span>
       </div>
     </div>
@@ -626,7 +970,7 @@ function renderMedia(media) {
   return `<img class="media-preview" src="${media.dataUrl}" alt="" />`;
 }
 
-function renderLeaderboard(players) {
+function renderLeaderboard(players, scope = "leaderboard") {
   if (!players.length) {
     return "";
   }
@@ -637,7 +981,7 @@ function renderLeaderboard(players) {
         <div class="leader-row">
           <span>${player.rank}</span>
           <strong>${escapeHtml(player.nickname)}</strong>
-          <span>${player.score}</span>
+          ${renderCount(player.score, `${scope}:${player.id ?? player.nickname}`, "", "span")}
         </div>
       `).join("")}
     </div>
@@ -657,7 +1001,7 @@ function renderStageBar(remote, variant) {
       </button>
       <div class="stage-tools" aria-label="Host tools">
         <span class="role-badge role-badge-inline">Presenter</span>
-        <span>${remote.playerCount}</span>
+        ${renderCount(remote.playerCount, `stage-players:${remote.pin}`)}
         <button type="button" data-action="copy-link">Copy link</button>
         ${renderStagePrimaryButton(remote)}
         <button type="button" data-action="host-end" ${remote.phase === "ended" ? "disabled" : ""}>End</button>
@@ -715,7 +1059,11 @@ async function authenticatePresenter() {
     email: state.presenterEmail,
     password: state.presenterPassword
   });
-  acceptPresenterSession(response.hostToken);
+  acceptPresenterSession(response.hostToken, response.presenter);
+  await loadPresenterHome();
+  if (!(await openPendingPresentationIfNeeded())) {
+    updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
+  }
   state.presenterPassword = "";
   showNotice("Presenter unlocked.");
   render();
@@ -791,20 +1139,316 @@ async function handleGoogleCredential(result) {
       throw new Error("Google sign-in did not return a credential.");
     }
     const response = await postJson("/api/auth/google", { credential });
-    acceptPresenterSession(response.hostToken);
-    showNotice("Presenter unlocked.");
+    acceptPresenterSession(response.hostToken, response.presenter);
+    await loadPresenterHome();
+    if (!(await openPendingPresentationIfNeeded())) {
+      updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
+    }
+    showNotice(`Welcome back, ${state.presenter?.name || "Presenter"}.`);
     render();
   } catch (error) {
     showError(error);
   }
 }
 
-function acceptPresenterSession(hostToken) {
+function acceptPresenterSession(hostToken, presenter = null) {
   state.hostToken = hostToken;
-  localStorage.setItem(STORAGE_KEYS.hostToken, state.hostToken);
+  state.presenter = presenter ?? state.presenter;
+  localStorage.setItem(STORAGE_KEYS.keepSignedIn, state.keepSignedIn ? "true" : "false");
+  if (state.keepSignedIn) {
+    localStorage.setItem(STORAGE_KEYS.hostToken, state.hostToken);
+    sessionStorage.removeItem(STORAGE_KEYS.hostToken);
+    return;
+  }
+  sessionStorage.setItem(STORAGE_KEYS.hostToken, state.hostToken);
+  localStorage.removeItem(STORAGE_KEYS.hostToken);
+}
+
+async function restorePresenterIfPossible() {
+  if (state.mode !== "presenter" || !state.hostToken || state.presenter || state.presenterLoading) {
+    return;
+  }
+
+  try {
+    state.presenterLoading = true;
+    await loadPresenterHome();
+    if (!(await openPendingPresentationIfNeeded()) && isPresentationLoginPath()) {
+      updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
+    }
+    render();
+  } catch {
+    clearPresenterSession();
+    render();
+  } finally {
+    state.presenterLoading = false;
+  }
+}
+
+async function loadPresenterHome() {
+  const me = await getJson("/api/me", true);
+  state.presenter = me.presenter;
+  await loadPresentations();
+}
+
+async function openPendingPresentationIfNeeded() {
+  const presentationId = state.pendingPresentationId || sessionStorage.getItem(STORAGE_KEYS.pendingPresentationId) || "";
+  if (!presentationId || !state.hostToken) {
+    return false;
+  }
+
+  state.pendingPresentationId = "";
+  sessionStorage.removeItem(STORAGE_KEYS.pendingPresentationId);
+  try {
+    await openPresentationRecord((await getJson(`/api/presentations/${encodeURIComponent(presentationId)}`, true)).presentation, { updateUrl: false });
+    return true;
+  } catch (error) {
+    state.activePresentationId = "";
+    state.activePresentationUpdatedAt = "";
+    state.presentationDirty = false;
+    state.lastSavedAt = "";
+    state.draft = createDraft();
+    state.activeQuestionId = state.draft.questions[0]?.id ?? "";
+    updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
+    showError(error);
+    return false;
+  }
+}
+
+async function loadPresentations() {
+  state.presentationsLoading = true;
+  try {
+    const response = await getJson("/api/presentations", true);
+    state.presentations = Array.isArray(response.presentations) ? response.presentations : [];
+    state.presentationsLoaded = true;
+  } finally {
+    state.presentationsLoading = false;
+  }
+}
+
+async function createPresentation() {
+  state.presentationsLoading = true;
+  render();
+  try {
+    const response = await postJson("/api/presentations", {}, true);
+    await openPresentationRecord(response.presentation);
+  } finally {
+    state.presentationsLoading = false;
+  }
+}
+
+async function openPresentation(presentationId) {
+  if (!presentationId) {
+    return;
+  }
+
+  const response = await getJson(`/api/presentations/${encodeURIComponent(presentationId)}`, true);
+  await openPresentationRecord(response.presentation);
+}
+
+async function openPresentationRecord(presentation, options = {}) {
+  state.session = null;
+  state.remote = null;
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+
+  state.activePresentationId = presentation.id;
+  state.activePresentationUpdatedAt = presentation.updatedAt ?? "";
+  state.draft = clonePresentationSnapshot(presentation.snapshot);
+  state.activeQuestionId = state.draft.questions[0]?.id ?? "";
+  state.presentationDirty = false;
+  state.savingPresentation = false;
+  state.lastSavedAt = presentation.updatedAt ?? "";
+  state.pendingPresentationId = "";
+  state.managementMenuId = "";
+  upsertPresentationSummary(presentation);
+  if (options.updateUrl !== false) {
+    updateBrowserUrl(getPresentationPath(presentation.id));
+  }
+  render();
+}
+
+async function savePresentation(options = {}) {
+  if (!state.activePresentationId || state.savingPresentation) {
+    return;
+  }
+
+  const silent = options.silent === true;
+  state.savingPresentation = true;
+  if (!silent) {
+    render();
+  }
+
+  try {
+    const response = await putJson(`/api/presentations/${encodeURIComponent(state.activePresentationId)}`, serializeDraftForSave(), true);
+    if (response.presentation?.id === state.activePresentationId) {
+      state.activePresentationUpdatedAt = response.presentation.updatedAt ?? "";
+      state.presentationDirty = false;
+      state.lastSavedAt = response.presentation.updatedAt ?? new Date().toISOString();
+      upsertPresentationSummary(response.presentation);
+    }
+  } finally {
+    state.savingPresentation = false;
+    render();
+  }
+}
+
+async function backToProjects() {
+  if (state.presentationDirty) {
+    await savePresentation({ silent: true });
+  }
+  state.activePresentationId = "";
+  state.activePresentationUpdatedAt = "";
+  state.presentationDirty = false;
+  state.lastSavedAt = "";
+  state.pendingPresentationId = "";
+  state.managementMenuId = "";
+  state.draft = createDraft();
+  state.activeQuestionId = state.draft.questions[0]?.id ?? "";
+  updateBrowserUrl(PRESENTATION_HOME_PATH);
+  await loadPresentations();
+  render();
+}
+
+function togglePresentationMenu(presentationId) {
+  state.managementMenuId = state.managementMenuId === presentationId ? "" : presentationId ?? "";
+  render();
+}
+
+async function renamePresentation(presentationId) {
+  const summary = findPresentationSummary(presentationId);
+  const currentTitle = summary?.title || "Untitled presentation";
+  const nextTitle = window.prompt("Rename presentation", currentTitle)?.trim();
+  state.managementMenuId = "";
+  if (!nextTitle || nextTitle === currentTitle) {
+    render();
+    return;
+  }
+
+  const response = await getJson(`/api/presentations/${encodeURIComponent(presentationId)}`, true);
+  const snapshot = clonePresentationSnapshot(response.presentation?.snapshot);
+  snapshot.title = nextTitle.slice(0, MAX_TITLE_LENGTH);
+  const updated = await putJson(`/api/presentations/${encodeURIComponent(presentationId)}`, snapshot, true);
+  if (updated.presentation) {
+    upsertPresentationSummary(updated.presentation);
+    if (state.activePresentationId === presentationId) {
+      state.draft = clonePresentationSnapshot(updated.presentation.snapshot);
+      state.activePresentationUpdatedAt = updated.presentation.updatedAt ?? "";
+      state.presentationDirty = false;
+      state.lastSavedAt = updated.presentation.updatedAt ?? "";
+    }
+  }
+  showNotice("Presentation renamed.");
+  render();
+}
+
+async function duplicatePresentation(presentationId) {
+  state.managementMenuId = "";
+  const response = await postJson(`/api/presentations/${encodeURIComponent(presentationId)}/duplicate`, {}, true);
+  if (response.presentation) {
+    upsertPresentationSummary(response.presentation);
+  }
+  showNotice("Presentation duplicated.");
+  render();
+}
+
+async function deletePresentation(presentationId) {
+  const summary = findPresentationSummary(presentationId);
+  const title = summary?.title || "Untitled presentation";
+  state.managementMenuId = "";
+  if (!window.confirm(`Delete "${title}"? This cannot be undone.`)) {
+    render();
+    return;
+  }
+
+  await deleteJson(`/api/presentations/${encodeURIComponent(presentationId)}`, true);
+  state.presentations = state.presentations.filter((presentation) => presentation.id !== presentationId);
+  if (state.activePresentationId === presentationId) {
+    state.activePresentationId = "";
+    state.activePresentationUpdatedAt = "";
+    state.presentationDirty = false;
+    state.lastSavedAt = "";
+    state.draft = createDraft();
+    state.activeQuestionId = state.draft.questions[0]?.id ?? "";
+    updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
+  }
+  showNotice("Presentation deleted.");
+  render();
+}
+
+function findPresentationSummary(presentationId) {
+  return state.presentations.find((presentation) => presentation.id === presentationId) ?? null;
+}
+
+function upsertPresentationSummary(presentation) {
+  const summary = {
+    id: presentation.id,
+    title: presentation.title,
+    createdAt: presentation.createdAt,
+    updatedAt: presentation.updatedAt,
+    questionCount: presentation.questionCount ?? presentation.snapshot?.questions?.length ?? 0,
+    titleCard: presentation.titleCard ?? {
+      title: presentation.title,
+      text: presentation.snapshot?.questions?.[0]?.text ?? "",
+      kind: presentation.snapshot?.questions?.[0]?.kind ?? ""
+    }
+  };
+  state.presentations = [
+    summary,
+    ...state.presentations.filter((item) => item.id !== presentation.id)
+  ].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+  state.presentationsLoaded = true;
+}
+
+function clonePresentationSnapshot(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.questions)) {
+    return createDraft();
+  }
+  return {
+    title: String(snapshot.title ?? "Untitled presentation"),
+    questions: snapshot.questions.map((question) => ({
+      id: question.id || crypto.randomUUID(),
+      kind: QUESTION_KINDS.includes(question.kind) ? question.kind : "quiz",
+      text: String(question.text ?? "Untitled question"),
+      points: Number.isFinite(Number(question.points)) ? Number(question.points) : DEFAULT_POINTS,
+      options: Array.isArray(question.options) ? question.options.map((option) => ({
+        id: option.id || crypto.randomUUID(),
+        text: String(option.text ?? "")
+      })) : createOptions(DEFAULT_OPTIONS),
+      correctOptionId: question.correctOptionId ?? question.options?.[0]?.id ?? null,
+      media: question.media ?? null
+    }))
+  };
+}
+
+function serializeDraftForSave() {
+  return {
+    title: state.draft.title,
+    questions: state.draft.questions.map((question) => ({
+      id: question.id,
+      kind: question.kind,
+      text: question.text,
+      points: question.kind === "slide" ? 0 : Number(question.points),
+      options: question.kind === "slide" ? [] : question.options,
+      correctOptionId: isScoredQuestionKind(question.kind) ? question.correctOptionId : null,
+      media: question.media
+    }))
+  };
+}
+
+function markPresentationDirty() {
+  if (!state.activePresentationId) {
+    return;
+  }
+  state.presentationDirty = true;
 }
 
 async function createSession() {
+  if (state.presentationDirty) {
+    await savePresentation({ silent: true });
+  }
+
   const payload = {
     title: state.draft.title,
     questions: state.draft.questions.map((question) => ({
@@ -891,15 +1535,31 @@ async function submitAnswer(optionId) {
 }
 
 async function postJson(url, payload, includeHostToken = false) {
+  return requestJson("POST", url, payload, includeHostToken);
+}
+
+async function putJson(url, payload, includeHostToken = false) {
+  return requestJson("PUT", url, payload, includeHostToken);
+}
+
+async function getJson(url, includeHostToken = false) {
+  return requestJson("GET", url, null, includeHostToken);
+}
+
+async function deleteJson(url, includeHostToken = false) {
+  return requestJson("DELETE", url, null, includeHostToken);
+}
+
+async function requestJson(method, url, payload, includeHostToken = false) {
   const headers = { "Content-Type": "application/json" };
   if (includeHostToken) {
     headers["X-Host-Token"] = state.hostToken;
   }
 
   const response = await fetch(url, {
-    method: "POST",
+    method,
     headers,
-    body: JSON.stringify(payload)
+    body: payload === null ? undefined : JSON.stringify(payload)
   });
   const body = await response.json().catch(() => ({}));
 
@@ -956,11 +1616,23 @@ function updateFromInput(target) {
   const questionId = target.dataset.questionId;
   const optionId = target.dataset.optionId;
 
+  if (field === "keepSignedIn" && target instanceof HTMLInputElement) {
+    state.keepSignedIn = target.checked;
+    localStorage.setItem(STORAGE_KEYS.keepSignedIn, state.keepSignedIn ? "true" : "false");
+    if (state.hostToken) {
+      acceptPresenterSession(state.hostToken, state.presenter);
+    }
+    return;
+  }
+
   if (field === "presenterEmail") state.presenterEmail = target.value;
   if (field === "presenterPassword") state.presenterPassword = target.value;
-  if (field === "playerPin") state.playerPin = target.value.replace(/\D/g, "").slice(0, 6);
+  if (field === "playerPin") state.playerPin = target.value.replace(/\D/g, "").slice(0, GAME_PIN_DIGIT_COUNT);
   if (field === "nickname") state.nickname = target.value;
-  if (field === "deckTitle") state.draft.title = target.value;
+  if (field === "deckTitle") {
+    state.draft.title = target.value;
+    markPresentationDirty();
+  }
 
   if (!questionId) {
     return;
@@ -982,6 +1654,7 @@ function updateFromInput(target) {
     if (option) option.text = target.value;
   }
 
+  markPresentationDirty();
   render();
 }
 
@@ -1003,6 +1676,7 @@ async function attachMedia(target) {
     size: file.size,
     dataUrl: await readFileAsDataUrl(file)
   };
+  markPresentationDirty();
   render();
 }
 
@@ -1019,6 +1693,7 @@ function addQuestion() {
   const question = createQuestion();
   state.draft.questions.push(question);
   state.activeQuestionId = question.id;
+  markPresentationDirty();
   render();
   requestAnimationFrame(() => selectQuestion(question.id));
 }
@@ -1031,6 +1706,7 @@ function removeQuestion(questionId) {
   if (!findQuestion(state.activeQuestionId)) {
     state.activeQuestionId = state.draft.questions[0]?.id ?? "";
   }
+  markPresentationDirty();
   render();
 }
 
@@ -1039,6 +1715,7 @@ function resetDeck() {
   state.remote = null;
   state.draft = createDraft();
   state.activeQuestionId = state.draft.questions[0]?.id ?? "";
+  markPresentationDirty();
   if (state.eventSource) {
     state.eventSource.close();
     state.eventSource = null;
@@ -1050,23 +1727,157 @@ async function copyJoinLink() {
   if (!state.remote?.pin) {
     throw new Error("No join link is available.");
   }
-  await navigator.clipboard.writeText(getJoinLink(state.remote.pin));
+  await writeClipboardText(getJoinLink(state.remote.pin));
   showNotice("Join link copied.");
+}
+
+async function writeClipboardText(text) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to the selection-based clipboard path.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+
+  if (!copied) {
+    throw new Error("Copy failed. Select and copy the join link manually.");
+  }
 }
 
 function chooseMedia(questionId) {
   document.querySelector(`input[type="file"][data-field="media"][data-question-id="${CSS.escape(questionId ?? "")}"]`)?.click();
 }
 
+async function navigateMode(mode) {
+  if (state.mode === "presenter" && mode !== "presenter" && state.presentationDirty) {
+    await savePresentation({ silent: true });
+  }
+  setMode(mode);
+}
+
 function setMode(mode) {
   state.mode = mode;
-  location.hash = mode === "home" ? "" : mode;
+  state.managementMenuId = "";
+  if (mode === "home") {
+    state.activePresentationId = "";
+    state.pendingPresentationId = "";
+    updateBrowserUrl("/");
+  } else if (mode === "player") {
+    state.activePresentationId = "";
+    state.pendingPresentationId = "";
+    updateBrowserUrl("/#player");
+  } else if (mode === "presenter") {
+    updateBrowserUrl(state.hostToken ? PRESENTATION_HOME_PATH : PRESENTATION_LOGIN_PATH);
+  }
   render();
+}
+
+function signOutPresenter() {
+  clearPresenterSession();
+  updateBrowserUrl(PRESENTATION_LOGIN_PATH);
+  render();
+}
+
+function clearPresenterSession() {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  localStorage.removeItem(STORAGE_KEYS.hostToken);
+  sessionStorage.removeItem(STORAGE_KEYS.hostToken);
+  sessionStorage.removeItem(STORAGE_KEYS.pendingPresentationId);
+  state.hostToken = "";
+  state.presenter = null;
+  state.presenterLoading = false;
+  state.presentations = [];
+  state.presentationsLoaded = false;
+  state.presentationsLoading = false;
+  state.activePresentationId = "";
+  state.activePresentationUpdatedAt = "";
+  state.pendingPresentationId = "";
+  state.managementMenuId = "";
+  state.presentationDirty = false;
+  state.savingPresentation = false;
+  state.lastSavedAt = "";
+  state.session = null;
+  state.remote = null;
+  state.draft = createDraft();
+  state.activeQuestionId = state.draft.questions[0]?.id ?? "";
+}
+
+function syncAutosaveTimer() {
+  const shouldAutosave = state.mode === "presenter" && state.hostToken && state.activePresentationId && !state.session;
+  if (shouldAutosave && !state.autosaveTimer) {
+    state.autosaveTimer = window.setInterval(() => {
+      void flushAutosave();
+    }, AUTO_SAVE_INTERVAL_MS);
+  }
+
+  if (!shouldAutosave && state.autosaveTimer) {
+    window.clearInterval(state.autosaveTimer);
+    state.autosaveTimer = null;
+  }
+}
+
+async function flushAutosave() {
+  if (!state.presentationDirty || state.savingPresentation) {
+    return;
+  }
+
+  try {
+    await savePresentation({ silent: true });
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function readStoredHostToken() {
+  return localStorage.getItem(STORAGE_KEYS.hostToken) ?? sessionStorage.getItem(STORAGE_KEYS.hostToken) ?? "";
+}
+
+function getSaveStatusText() {
+  if (state.savingPresentation) {
+    return "Saving...";
+  }
+  if (state.presentationDirty) {
+    return "Autosaves every minute";
+  }
+  if (state.lastSavedAt) {
+    return `Saved ${formatSavedTime(state.lastSavedAt)}`;
+  }
+  return "Saved draft";
+}
+
+function formatSavedTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "just now";
+  }
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function formatPresentationMeta(presentation) {
+  const itemCount = Number(presentation.questionCount ?? 0);
+  const itemLabel = `${itemCount} item${itemCount === 1 ? "" : "s"}`;
+  return `${itemLabel} - updated ${formatSavedTime(presentation.updatedAt)}`;
 }
 
 function createDraft() {
   return {
-    title: "Untitled live deck",
+    title: "Untitled presentation",
     questions: [createQuestion()]
   };
 }
@@ -1076,7 +1887,7 @@ function createQuestion() {
   return {
     id: crypto.randomUUID(),
     kind: "quiz",
-    text: "What should this question ask?",
+    text: "Untitled question",
     points: DEFAULT_POINTS,
     options,
     correctOptionId: options[0].id,
@@ -1096,7 +1907,7 @@ function leavePresentationWithNotice(message) {
   state.restoreKey = "";
   state.mode = "home";
   state.notice = message;
-  location.hash = "";
+  updateBrowserUrl("/", { replace: true });
   render();
 }
 
@@ -1214,11 +2025,111 @@ function updateCreatorSelection() {
 }
 
 function getInitialMode() {
+  const route = getLocationRoute();
+  if (route.mode) {
+    return route.mode;
+  }
+
   const mode = location.hash.replace("#", "").split("?")[0];
   if (mode === "presenter" || mode === "player") {
     return mode;
   }
   return "home";
+}
+
+function syncRouteStateFromLocation() {
+  const route = getLocationRoute();
+  const nextMode = route.mode || getInitialMode();
+  const hashPin = getHashParam("pin");
+  const nextPin = normalizeStoredPin(hashPin);
+  const currentPin = normalizeStoredPin(state.playerPin);
+
+  if (nextMode === "player" && nextPin && nextPin !== currentPin) {
+    state.playerId = "";
+    state.remote = null;
+    state.restoreKey = "";
+    localStorage.removeItem(STORAGE_KEYS.playerId);
+  }
+
+  state.mode = nextMode;
+  state.playerPin = hashPin ?? state.playerPin;
+  state.pendingPresentationId = route.presentationId || "";
+  state.managementMenuId = "";
+
+  if (nextMode === "presenter" && route.presentationId && !state.hostToken) {
+    sessionStorage.setItem(STORAGE_KEYS.pendingPresentationId, route.presentationId);
+    updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
+  }
+
+  if (nextMode !== "presenter" || !route.presentationId) {
+    state.activePresentationId = nextMode === "presenter" ? state.activePresentationId : "";
+  } else if (state.activePresentationId !== route.presentationId) {
+    state.activePresentationId = "";
+  }
+  if (nextMode === "presenter" && !route.presentationId && isPresentationHomePath()) {
+    state.activePresentationId = "";
+    state.activePresentationUpdatedAt = "";
+    state.presentationDirty = false;
+    state.lastSavedAt = "";
+    state.draft = createDraft();
+    state.activeQuestionId = state.draft.questions[0]?.id ?? "";
+  }
+
+  render();
+  void restorePlayerIfPossible();
+  if (nextMode === "presenter" && route.presentationId && state.hostToken && state.presenter) {
+    void openPendingPresentationIfNeeded();
+  } else {
+    void restorePresenterIfPossible();
+  }
+}
+
+function getLocationRoute() {
+  const pathname = normalizePathname(location.pathname);
+  if (pathname === PRESENTATION_LOGIN_PATH || pathname === PRESENTATION_HOME_PATH) {
+    return { mode: "presenter", presentationId: "" };
+  }
+
+  const presentationId = getPresentationRouteId();
+  if (presentationId) {
+    return { mode: "presenter", presentationId };
+  }
+
+  return { mode: "", presentationId: "" };
+}
+
+function normalizePathname(pathname) {
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    return pathname.slice(0, -1);
+  }
+  return pathname || "/";
+}
+
+function isPresentationLoginPath() {
+  return normalizePathname(location.pathname) === PRESENTATION_LOGIN_PATH;
+}
+
+function isPresentationHomePath() {
+  return normalizePathname(location.pathname) === PRESENTATION_HOME_PATH;
+}
+
+function getPresentationRouteId() {
+  const match = normalizePathname(location.pathname).match(/^\/presentation\/([0-9a-fA-F-]{36})$/);
+  return match?.[1] ?? "";
+}
+
+function getPresentationPath(presentationId) {
+  return presentationId ? `${PRESENTATION_PATH_PREFIX}/${presentationId}` : PRESENTATION_HOME_PATH;
+}
+
+function updateBrowserUrl(path, options = {}) {
+  const nextUrl = `${location.origin}${path}`;
+  if (nextUrl === location.href) {
+    return;
+  }
+
+  const method = options.replace === true ? "replaceState" : "pushState";
+  history[method]({}, "", path);
 }
 
 function getHashParam(name) {
@@ -1227,20 +2138,20 @@ function getHashParam(name) {
 }
 
 function getJoinLink(pin) {
-  return `${location.origin}${location.pathname}#player?pin=${pin}`;
+  return `${location.origin}/#player?pin=${pin}`;
 }
 
 function normalizePinInput(pin) {
   const normalized = pin.replace(/\D/g, "");
-  if (!/^\d{6}$/.test(normalized)) {
-    throw new Error("PIN must be 6 digits.");
+  if (normalized.length !== GAME_PIN_DIGIT_COUNT || /\D/.test(normalized)) {
+    throw new Error(`PIN must be ${GAME_PIN_DIGIT_COUNT} digits.`);
   }
   return normalized;
 }
 
 function normalizeStoredPin(pin) {
   const normalized = String(pin ?? "").replace(/\D/g, "");
-  return /^\d{6}$/.test(normalized) ? normalized : "";
+  return normalized.length === GAME_PIN_DIGIT_COUNT && !/\D/.test(normalized) ? normalized : "";
 }
 
 function formatPhase(phase) {

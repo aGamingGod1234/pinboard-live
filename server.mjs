@@ -12,11 +12,15 @@ const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_LOCAL_AUTH_SECRET = "local-development-secret-change-me";
 const DEFAULT_LOCAL_PRESENTER_EMAIL = "presenter@pinboard.local";
 const DEFAULT_LOCAL_PRESENTER_PASSWORD = "local-presenter-password";
+const DEFAULT_PRESENTER_NAME = "Presenter";
+const DUPLICATE_TITLE_SUFFIX = " copy";
 const GAME_PIN_LENGTH = 6;
 const MIN_OPTION_COUNT = 2;
 const MAX_OPTION_COUNT = 6;
 const MAX_QUESTION_COUNT = 200;
 const MAX_TITLE_LENGTH = 120;
+const MAX_PRESENTER_NAME_LENGTH = 120;
+const MAX_STABLE_ID_LENGTH = 80;
 const MAX_QUESTION_TEXT_LENGTH = 500;
 const MAX_OPTION_TEXT_LENGTH = 140;
 const MAX_NICKNAME_LENGTH = 32;
@@ -31,7 +35,7 @@ const PASSWORD_KEY_BYTES = 64;
 const PASSWORD_SALT_BYTES = 16;
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const HOST_DISCONNECT_GRACE_MS = 3000;
-const PLAYER_DISCONNECT_GRACE_MS = 2000;
+const PLAYER_DISCONNECT_GRACE_MS = 8000;
 const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
 const GOOGLE_TOKEN_MAX_LENGTH = 4096;
 const GOOGLE_JWKS_DEFAULT_TTL_MS = 60 * 60 * 1000;
@@ -58,7 +62,8 @@ const { Pool } = pg;
 /** @typedef {{ id: string, nickname: string, score: number, joinedAt: number }} Player */
 /** @typedef {{ optionId: string, answeredAt: number }} Answer */
 /** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, heartbeat: NodeJS.Timeout }} Client */
-/** @typedef {{ id: string, email: string, passwordHash: string }} Presenter */
+/** @typedef {{ id: string, email: string, name: string, passwordHash: string, googleSub?: string | null }} Presenter */
+/** @typedef {{ id: string, presenterId: string, title: string, snapshot: { title: string, questions: Question[] }, createdAt: string, updatedAt: string }} Presentation */
 /** @typedef {{ pin: string, title: string, presenterId: string, questions: Question[], phase: Phase, currentQuestionIndex: number, players: Map<string, Player>, answers: Map<string, Answer>, scoredQuestionIndexes: Set<number>, openedAt: number | null, clients: Map<string, Client>, endedReason: string | null, createdAt: number }} Session */
 
 const staticRoutes = new Map([
@@ -71,6 +76,8 @@ const staticRoutes = new Map([
 const database = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL }) : null;
 /** @type {Map<string, Presenter>} */
 const localPresentersByEmail = new Map();
+/** @type {Map<string, Presentation>} */
+const localPresentationsById = new Map();
 /** @type {Map<string, Session>} */
 const sessions = new Map();
 /** @type {{ expiresAt: number, keys: Map<string, JsonWebKey> }} */
@@ -141,11 +148,52 @@ async function routeRequest(request, response) {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/me") {
+    await handleCurrentPresenter(request, response);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/config") {
     sendJson(response, 200, {
       googleClientId: GOOGLE_CLIENT_ID
     });
     return;
+  }
+
+  if (url.pathname === "/api/presentations") {
+    if (request.method === "GET") {
+      await handleListPresentations(request, response);
+      return;
+    }
+    if (request.method === "POST") {
+      await handleCreatePresentation(request, response);
+      return;
+    }
+  }
+
+  const presentationMatch = url.pathname.match(/^\/api\/presentations\/([0-9a-fA-F-]{36})$/);
+  if (presentationMatch) {
+    if (request.method === "GET") {
+      await handleGetPresentation(request, response, presentationMatch[1]);
+      return;
+    }
+    if (request.method === "PUT") {
+      await handleUpdatePresentation(request, response, presentationMatch[1]);
+      return;
+    }
+    if (request.method === "DELETE") {
+      await handleDeletePresentation(request, response, presentationMatch[1]);
+      return;
+    }
+  }
+
+  const presentationActionMatch = url.pathname.match(/^\/api\/presentations\/([0-9a-fA-F-]{36})\/([a-z-]+)$/);
+  if (presentationActionMatch) {
+    if (request.method === "POST" && presentationActionMatch[2] === "duplicate") {
+      await handleDuplicatePresentation(request, response, presentationActionMatch[1]);
+      return;
+    }
+    throw new HttpError(404, "Presentation action was not found.");
   }
 
   if (request.method === "POST" && url.pathname === "/api/sessions") {
@@ -179,7 +227,7 @@ async function handleAuth(request, response) {
 
   sendJson(response, 200, {
     hostToken: signPresenterToken(presenter),
-    presenter: { email: presenter.email }
+    presenter: serializePresenter(presenter)
   });
 }
 
@@ -225,7 +273,7 @@ async function handleGoogleAuthCallback(request, response, url) {
     throw new HttpError(403, "Google email must be verified.");
   }
 
-  const presenter = await findOrCreateGooglePresenter(profile.email);
+  const presenter = await findOrCreateGooglePresenter(profile);
   sendGoogleLoginSuccess(response, signPresenterToken(presenter));
 }
 
@@ -234,12 +282,55 @@ async function handleGoogleCredentialAuth(request, response) {
   const body = await readJson(request);
   const credential = readString(body.credential, "Google credential");
   const profile = await verifyGoogleCredentialToken(credential);
-  const presenter = await findOrCreateGooglePresenter(profile.email);
+  const presenter = await findOrCreateGooglePresenter(profile);
 
   sendJson(response, 200, {
     hostToken: signPresenterToken(presenter),
-    presenter: { email: presenter.email }
+    presenter: serializePresenter(presenter)
   });
+}
+
+async function handleCurrentPresenter(request, response) {
+  const presenter = await requireCurrentPresenter(request);
+  sendJson(response, 200, { presenter: serializePresenter(presenter) });
+}
+
+async function handleListPresentations(request, response) {
+  const presenter = await requireCurrentPresenter(request);
+  const presentations = await listPresentationsForPresenter(presenter.id);
+  sendJson(response, 200, { presentations: presentations.map(serializePresentationSummary) });
+}
+
+async function handleCreatePresentation(request, response) {
+  const presenter = await requireCurrentPresenter(request);
+  const presentation = await createPresentationForPresenter(presenter.id, createBlankPresentationSnapshot());
+  sendJson(response, 201, { presentation: serializePresentation(presentation) });
+}
+
+async function handleGetPresentation(request, response, presentationId) {
+  const presenter = await requireCurrentPresenter(request);
+  const presentation = await getPresentationForPresenter(presenter.id, presentationId);
+  sendJson(response, 200, { presentation: serializePresentation(presentation) });
+}
+
+async function handleUpdatePresentation(request, response, presentationId) {
+  const presenter = await requireCurrentPresenter(request);
+  const body = await readJson(request);
+  const snapshot = normalizePresentationSnapshot(body);
+  const presentation = await updatePresentationForPresenter(presenter.id, presentationId, snapshot);
+  sendJson(response, 200, { presentation: serializePresentation(presentation) });
+}
+
+async function handleDeletePresentation(request, response, presentationId) {
+  const presenter = await requireCurrentPresenter(request);
+  await deletePresentationForPresenter(presenter.id, presentationId);
+  sendJson(response, 200, { ok: true });
+}
+
+async function handleDuplicatePresentation(request, response, presentationId) {
+  const presenter = await requireCurrentPresenter(request);
+  const presentation = await duplicatePresentationForPresenter(presenter.id, presentationId);
+  sendJson(response, 201, { presentation: serializePresentation(presentation) });
 }
 
 async function handleCreateSession(request, response) {
@@ -653,7 +744,7 @@ function getCurrentQuestion(session) {
 }
 
 async function serveStatic(response, pathname) {
-  const route = staticRoutes.get(pathname);
+  const route = staticRoutes.get(pathname) ?? getSpaFallbackRoute(pathname);
   if (!route) {
     throw new HttpError(404, "Page was not found.");
   }
@@ -661,6 +752,13 @@ async function serveStatic(response, pathname) {
   const file = await readFile(route.path);
   response.writeHead(200, { "Content-Type": route.type });
   response.end(file);
+}
+
+function getSpaFallbackRoute(pathname) {
+  if (pathname === "/presentation/login" || pathname === "/presentation/homepage" || /^\/presentation\/[0-9a-fA-F-]{36}$/.test(pathname)) {
+    return staticRoutes.get("/");
+  }
+  return null;
 }
 
 async function readJson(request) {
@@ -696,6 +794,99 @@ function normalizeQuestions(input) {
   }
 
   return input.map((question, index) => normalizeQuestion(question, index));
+}
+
+function normalizePresentationSnapshot(input) {
+  const source = input?.snapshot && typeof input.snapshot === "object" ? input.snapshot : input;
+  const title = limitText(readString(source?.title, "Presentation title"), MAX_TITLE_LENGTH, "Presentation title");
+  return {
+    title,
+    questions: normalizePresentationQuestions(source?.questions)
+  };
+}
+
+function normalizePresentationQuestions(input) {
+  if (!Array.isArray(input) || input.length === 0) {
+    throw new HttpError(400, "At least one slide or question is required.");
+  }
+
+  if (input.length > MAX_QUESTION_COUNT) {
+    throw new HttpError(400, `Decks can contain at most ${MAX_QUESTION_COUNT} items.`);
+  }
+
+  const ids = new Set();
+  return input.map((question, index) => {
+    const normalized = normalizePresentationQuestion(question, index);
+    if (ids.has(normalized.id)) {
+      throw new HttpError(400, "Item IDs must be unique.");
+    }
+    ids.add(normalized.id);
+    return normalized;
+  });
+}
+
+function normalizePresentationQuestion(input, index) {
+  if (!input || typeof input !== "object") {
+    throw new HttpError(400, `Item ${index + 1} is required.`);
+  }
+
+  const id = readStableId(input.id, `Item ${index + 1} ID`);
+  const kind = normalizeQuestionKind(input.kind);
+  const text = limitText(readString(input.text, `Item ${index + 1} text`), MAX_QUESTION_TEXT_LENGTH, `Item ${index + 1} text`);
+  const media = normalizeMedia(input.media);
+
+  if (kind === "slide") {
+    return {
+      id,
+      kind,
+      text,
+      points: 0,
+      options: [],
+      correctOptionId: null,
+      media
+    };
+  }
+
+  const options = normalizePresentationOptions(input.options);
+  const points = normalizePoints(input.points);
+  const correctOptionId = readString(input.correctOptionId, `Item ${index + 1} correct option`);
+
+  if (kind === "true_false" && options.length !== 2) {
+    throw new HttpError(400, `Item ${index + 1} true or false questions need exactly 2 options.`);
+  }
+
+  if (!options.some((option) => option.id === correctOptionId)) {
+    throw new HttpError(400, `Item ${index + 1} needs a valid correct option.`);
+  }
+
+  return {
+    id,
+    kind,
+    text,
+    points,
+    options,
+    correctOptionId,
+    media
+  };
+}
+
+function normalizePresentationOptions(input) {
+  if (!Array.isArray(input) || input.length < MIN_OPTION_COUNT || input.length > MAX_OPTION_COUNT) {
+    throw new HttpError(400, `Questions need ${MIN_OPTION_COUNT}-${MAX_OPTION_COUNT} options.`);
+  }
+
+  const ids = new Set();
+  return input.map((option, index) => {
+    const id = readStableId(option?.id, `Option ${index + 1} ID`);
+    const text = limitText(readString(option?.text, `Option ${index + 1} text`), MAX_OPTION_TEXT_LENGTH, `Option ${index + 1} text`);
+
+    if (ids.has(id)) {
+      throw new HttpError(400, "Option IDs must be unique.");
+    }
+    ids.add(id);
+
+    return { id, text };
+  });
 }
 
 function normalizeQuestion(input, index) {
@@ -818,6 +1009,14 @@ function readString(value, label) {
   return value;
 }
 
+function readStableId(value, label) {
+  const id = readString(value, label).trim();
+  if (!id || id.length > MAX_STABLE_ID_LENGTH) {
+    throw new HttpError(400, `${label} is not valid.`);
+  }
+  return id;
+}
+
 function limitText(value, maxLength, label) {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -841,6 +1040,15 @@ function requirePresenterToken(request) {
     throw new HttpError(401, "Presenter authentication is required.");
   }
   return verifyPresenterToken(token);
+}
+
+async function requireCurrentPresenter(request) {
+  const tokenPresenter = requirePresenterToken(request);
+  const presenter = await findPresenterById(tokenPresenter.id);
+  if (!presenter) {
+    throw new HttpError(401, "Presenter authentication is not valid.");
+  }
+  return presenter;
 }
 
 function requireSessionHostToken(request, session) {
@@ -886,6 +1094,9 @@ async function initializeDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await database.query("ALTER TABLE presenters ADD COLUMN IF NOT EXISTS name TEXT");
+  await database.query("ALTER TABLE presenters ADD COLUMN IF NOT EXISTS google_sub TEXT");
+  await database.query("CREATE UNIQUE INDEX IF NOT EXISTS presenters_google_sub_unique ON presenters (google_sub) WHERE google_sub IS NOT NULL");
   await database.query(`
     CREATE TABLE IF NOT EXISTS live_sessions (
       pin TEXT PRIMARY KEY,
@@ -893,6 +1104,17 @@ async function initializeDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await database.query(`
+    CREATE TABLE IF NOT EXISTS presentations (
+      id UUID PRIMARY KEY,
+      presenter_id UUID NOT NULL REFERENCES presenters(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      snapshot JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await database.query("CREATE INDEX IF NOT EXISTS presentations_presenter_updated_idx ON presentations (presenter_id, updated_at DESC)");
 }
 
 async function bootstrapPresenter() {
@@ -906,6 +1128,7 @@ async function bootstrapPresenter() {
     localPresentersByEmail.set(BOOTSTRAP_PRESENTER_EMAIL, {
       id: randomUUID(),
       email: BOOTSTRAP_PRESENTER_EMAIL,
+      name: DEFAULT_PRESENTER_NAME,
       passwordHash
     });
     return;
@@ -913,12 +1136,15 @@ async function bootstrapPresenter() {
 
   await database.query(
     `
-      INSERT INTO presenters (id, email, password_hash)
-      VALUES ($1, $2, $3)
+      INSERT INTO presenters (id, email, name, password_hash)
+      VALUES ($1, $2, $3, $4)
       ON CONFLICT (email)
-      DO UPDATE SET password_hash = EXCLUDED.password_hash, updated_at = NOW()
+      DO UPDATE SET
+        name = COALESCE(presenters.name, EXCLUDED.name),
+        password_hash = EXCLUDED.password_hash,
+        updated_at = NOW()
     `,
-    [randomUUID(), BOOTSTRAP_PRESENTER_EMAIL, passwordHash]
+    [randomUUID(), BOOTSTRAP_PRESENTER_EMAIL, DEFAULT_PRESENTER_NAME, passwordHash]
   );
 }
 
@@ -928,22 +1154,55 @@ async function findPresenterByEmail(email) {
   }
 
   const result = await database.query(
-    "SELECT id, email, password_hash AS \"passwordHash\" FROM presenters WHERE email = $1",
+    "SELECT id, email, COALESCE(name, split_part(email, '@', 1)) AS name, password_hash AS \"passwordHash\", google_sub AS \"googleSub\" FROM presenters WHERE email = $1",
     [email]
   );
   return result.rows[0] ?? null;
 }
 
-async function findOrCreateGooglePresenter(email) {
-  const normalizedEmail = normalizeEmail(email);
-  const existing = await findPresenterByEmail(normalizedEmail);
+async function findPresenterById(id) {
+  if (!database) {
+    return [...localPresentersByEmail.values()].find((presenter) => presenter.id === id) ?? null;
+  }
+
+  const result = await database.query(
+    "SELECT id, email, COALESCE(name, split_part(email, '@', 1)) AS name, password_hash AS \"passwordHash\", google_sub AS \"googleSub\" FROM presenters WHERE id = $1",
+    [id]
+  );
+  return result.rows[0] ?? null;
+}
+
+async function findPresenterByGoogleSub(googleSub) {
+  if (!googleSub) {
+    return null;
+  }
+
+  if (!database) {
+    return [...localPresentersByEmail.values()].find((presenter) => presenter.googleSub === googleSub) ?? null;
+  }
+
+  const result = await database.query(
+    "SELECT id, email, COALESCE(name, split_part(email, '@', 1)) AS name, password_hash AS \"passwordHash\", google_sub AS \"googleSub\" FROM presenters WHERE google_sub = $1",
+    [googleSub]
+  );
+  return result.rows[0] ?? null;
+}
+
+async function findOrCreateGooglePresenter(profile) {
+  const normalizedEmail = normalizeEmail(profile.email);
+  const googleSub = typeof profile.sub === "string" && profile.sub ? profile.sub : null;
+  const name = normalizePresenterName(profile.name, normalizedEmail);
+  const existing = (await findPresenterByGoogleSub(googleSub)) ?? (await findPresenterByEmail(normalizedEmail));
+
   if (existing) {
-    return existing;
+    return updatePresenterGoogleProfile(existing, { email: normalizedEmail, name, googleSub });
   }
 
   const presenter = {
     id: randomUUID(),
     email: normalizedEmail,
+    name,
+    googleSub,
     passwordHash: await createPasswordHash(randomBytes(32).toString("base64url"))
   };
 
@@ -954,15 +1213,223 @@ async function findOrCreateGooglePresenter(email) {
 
   const result = await database.query(
     `
-      INSERT INTO presenters (id, email, password_hash)
-      VALUES ($1, $2, $3)
+      INSERT INTO presenters (id, email, name, google_sub, password_hash)
+      VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (email)
-      DO UPDATE SET updated_at = NOW()
-      RETURNING id, email, password_hash AS "passwordHash"
+      DO UPDATE SET
+        name = EXCLUDED.name,
+        google_sub = COALESCE(EXCLUDED.google_sub, presenters.google_sub),
+        updated_at = NOW()
+      RETURNING id, email, COALESCE(name, split_part(email, '@', 1)) AS name, password_hash AS "passwordHash", google_sub AS "googleSub"
     `,
-    [presenter.id, presenter.email, presenter.passwordHash]
+    [presenter.id, presenter.email, presenter.name, presenter.googleSub, presenter.passwordHash]
   );
   return result.rows[0];
+}
+
+async function updatePresenterGoogleProfile(existing, profile) {
+  if (!database) {
+    localPresentersByEmail.delete(existing.email);
+    const updated = {
+      ...existing,
+      email: profile.email,
+      name: profile.name,
+      googleSub: profile.googleSub ?? existing.googleSub ?? null
+    };
+    localPresentersByEmail.set(updated.email, updated);
+    return updated;
+  }
+
+  const result = await database.query(
+    `
+      UPDATE presenters
+      SET email = $2,
+        name = $3,
+        google_sub = COALESCE($4, google_sub),
+        updated_at = NOW()
+      WHERE id = $1
+      RETURNING id, email, COALESCE(name, split_part(email, '@', 1)) AS name, password_hash AS "passwordHash", google_sub AS "googleSub"
+    `,
+    [existing.id, profile.email, profile.name, profile.googleSub]
+  );
+  return result.rows[0];
+}
+
+async function listPresentationsForPresenter(presenterId) {
+  if (!database) {
+    return [...localPresentationsById.values()]
+      .filter((presentation) => presentation.presenterId === presenterId)
+      .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+  }
+
+  const result = await database.query(
+    `
+      SELECT id, presenter_id AS "presenterId", title, snapshot,
+        created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM presentations
+      WHERE presenter_id = $1
+      ORDER BY updated_at DESC
+    `,
+    [presenterId]
+  );
+  return result.rows.map(normalizePresentationRecord);
+}
+
+async function createPresentationForPresenter(presenterId, snapshot) {
+  const now = new Date().toISOString();
+  const presentation = {
+    id: randomUUID(),
+    presenterId,
+    title: snapshot.title,
+    snapshot,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  if (!database) {
+    localPresentationsById.set(presentation.id, presentation);
+    return presentation;
+  }
+
+  const result = await database.query(
+    `
+      INSERT INTO presentations (id, presenter_id, title, snapshot)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, presenter_id AS "presenterId", title, snapshot,
+        created_at AS "createdAt", updated_at AS "updatedAt"
+    `,
+    [presentation.id, presenterId, snapshot.title, JSON.stringify(snapshot)]
+  );
+  return normalizePresentationRecord(result.rows[0]);
+}
+
+async function getPresentationForPresenter(presenterId, presentationId) {
+  if (!database) {
+    const presentation = localPresentationsById.get(presentationId);
+    if (!presentation || presentation.presenterId !== presenterId) {
+      throw new HttpError(404, "Presentation was not found.");
+    }
+    return presentation;
+  }
+
+  const result = await database.query(
+    `
+      SELECT id, presenter_id AS "presenterId", title, snapshot,
+        created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM presentations
+      WHERE id = $1 AND presenter_id = $2
+    `,
+    [presentationId, presenterId]
+  );
+
+  if (!result.rows[0]) {
+    throw new HttpError(404, "Presentation was not found.");
+  }
+  return normalizePresentationRecord(result.rows[0]);
+}
+
+async function updatePresentationForPresenter(presenterId, presentationId, snapshot) {
+  if (!database) {
+    const existing = await getPresentationForPresenter(presenterId, presentationId);
+    const updated = {
+      ...existing,
+      title: snapshot.title,
+      snapshot,
+      updatedAt: new Date().toISOString()
+    };
+    localPresentationsById.set(presentationId, updated);
+    return updated;
+  }
+
+  const result = await database.query(
+    `
+      UPDATE presentations
+      SET title = $3,
+        snapshot = $4,
+        updated_at = NOW()
+      WHERE id = $1 AND presenter_id = $2
+      RETURNING id, presenter_id AS "presenterId", title, snapshot,
+        created_at AS "createdAt", updated_at AS "updatedAt"
+    `,
+    [presentationId, presenterId, snapshot.title, JSON.stringify(snapshot)]
+  );
+
+  if (!result.rows[0]) {
+    throw new HttpError(404, "Presentation was not found.");
+  }
+  return normalizePresentationRecord(result.rows[0]);
+}
+
+async function deletePresentationForPresenter(presenterId, presentationId) {
+  if (!database) {
+    await getPresentationForPresenter(presenterId, presentationId);
+    localPresentationsById.delete(presentationId);
+    return;
+  }
+
+  const result = await database.query(
+    `
+      DELETE FROM presentations
+      WHERE id = $1 AND presenter_id = $2
+      RETURNING id
+    `,
+    [presentationId, presenterId]
+  );
+
+  if (!result.rows[0]) {
+    throw new HttpError(404, "Presentation was not found.");
+  }
+}
+
+async function duplicatePresentationForPresenter(presenterId, presentationId) {
+  const source = await getPresentationForPresenter(presenterId, presentationId);
+  const snapshot = createDuplicatePresentationSnapshot(source.snapshot);
+  return createPresentationForPresenter(presenterId, snapshot);
+}
+
+function normalizePresentationRecord(record) {
+  const snapshot = typeof record.snapshot === "string" ? JSON.parse(record.snapshot) : record.snapshot;
+  return {
+    id: record.id,
+    presenterId: record.presenterId,
+    title: record.title,
+    snapshot,
+    createdAt: new Date(record.createdAt).toISOString(),
+    updatedAt: new Date(record.updatedAt).toISOString()
+  };
+}
+
+function createDuplicatePresentationSnapshot(snapshot) {
+  const clone = JSON.parse(JSON.stringify(snapshot ?? createBlankPresentationSnapshot()));
+  const sourceTitle = typeof clone.title === "string" && clone.title.trim()
+    ? clone.title.trim()
+    : "Untitled presentation";
+  return normalizePresentationSnapshot({
+    ...clone,
+    title: `${sourceTitle}${DUPLICATE_TITLE_SUFFIX}`.slice(0, MAX_TITLE_LENGTH)
+  });
+}
+
+function createBlankPresentationSnapshot() {
+  const options = ["Answer 1", "Answer 2", "Answer 3", "Answer 4"].map((text) => ({
+    id: randomUUID(),
+    text
+  }));
+
+  return {
+    title: "Untitled presentation",
+    questions: [
+      {
+        id: randomUUID(),
+        kind: "quiz",
+        text: "Untitled question",
+        points: 1000,
+        options,
+        correctOptionId: options[0].id,
+        media: null
+      }
+    ]
+  };
 }
 
 function assertGoogleOAuthConfigured() {
@@ -1014,7 +1481,9 @@ async function fetchGoogleProfile(accessToken) {
     throw new HttpError(502, "Google profile lookup failed.");
   }
   return {
+    sub: typeof payload.sub === "string" ? payload.sub : null,
     email: payload.email,
+    name: typeof payload.name === "string" ? payload.name : "",
     email_verified: payload.email_verified === true || payload.email_verified === "true"
   };
 }
@@ -1069,7 +1538,11 @@ async function verifyGoogleCredentialToken(credential) {
     throw new HttpError(401, "Google credential email is not valid.");
   }
 
-  return { email: payload.email };
+  return {
+    sub: typeof payload.sub === "string" ? payload.sub : null,
+    email: payload.email,
+    name: typeof payload.name === "string" ? payload.name : ""
+  };
 }
 
 function parseBase64UrlJson(value, label) {
@@ -1142,6 +1615,7 @@ function signPresenterToken(presenter) {
     JSON.stringify({
       sub: presenter.id,
       email: presenter.email,
+      name: presenter.name || derivePresenterName(presenter.email),
       exp: Date.now() + TOKEN_TTL_MS
     })
   ).toString("base64url");
@@ -1165,7 +1639,7 @@ function verifyPresenterToken(token) {
     if (typeof decoded.sub !== "string" || typeof decoded.email !== "string" || Number(decoded.exp) < Date.now()) {
       throw new Error("Invalid token payload.");
     }
-    return { id: decoded.sub, email: decoded.email };
+    return { id: decoded.sub, email: decoded.email, name: typeof decoded.name === "string" ? decoded.name : derivePresenterName(decoded.email) };
   } catch {
     throw new HttpError(401, "Presenter authentication is not valid.");
   }
@@ -1183,6 +1657,16 @@ function constantTimeStringEquals(left, right) {
 
 function normalizeEmail(email) {
   return String(email).trim().toLowerCase();
+}
+
+function normalizePresenterName(name, email) {
+  const trimmed = String(name ?? "").trim().slice(0, MAX_PRESENTER_NAME_LENGTH);
+  return trimmed || derivePresenterName(email);
+}
+
+function derivePresenterName(email) {
+  const localPart = String(email ?? "").split("@")[0]?.trim();
+  return localPart || DEFAULT_PRESENTER_NAME;
 }
 
 async function getSession(pin) {
@@ -1289,6 +1773,42 @@ function hydrateSessionSnapshot(snapshot, clients) {
   };
 }
 
+function serializePresenter(presenter) {
+  return {
+    id: presenter.id,
+    email: presenter.email,
+    name: presenter.name || derivePresenterName(presenter.email)
+  };
+}
+
+function serializePresentationSummary(presentation) {
+  const titleCard = getPresentationTitleCard(presentation);
+  return {
+    id: presentation.id,
+    title: presentation.title,
+    createdAt: presentation.createdAt,
+    updatedAt: presentation.updatedAt,
+    questionCount: Array.isArray(presentation.snapshot?.questions) ? presentation.snapshot.questions.length : 0,
+    titleCard
+  };
+}
+
+function serializePresentation(presentation) {
+  return {
+    ...serializePresentationSummary(presentation),
+    snapshot: presentation.snapshot
+  };
+}
+
+function getPresentationTitleCard(presentation) {
+  const firstItem = Array.isArray(presentation.snapshot?.questions) ? presentation.snapshot.questions[0] : null;
+  return {
+    title: presentation.title || "Untitled presentation",
+    text: typeof firstItem?.text === "string" ? firstItem.text : "",
+    kind: typeof firstItem?.kind === "string" ? firstItem.kind : ""
+  };
+}
+
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
@@ -1302,7 +1822,7 @@ function sendGoogleLoginSuccess(response, hostToken) {
 <body>
 <script>
 localStorage.setItem("pinboard.hostToken", ${JSON.stringify(hostToken)});
-location.replace("/#presenter");
+location.replace("/presentation/homepage");
 </script>
 </body>
 </html>`);

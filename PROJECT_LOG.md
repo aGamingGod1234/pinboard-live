@@ -347,3 +347,281 @@
 
 ### Suggested Next Steps
 - Add automated production viewport checks for home, host lobby, player lobby, presenter question, player answer, and presenter-left redirect.
+
+## [2026-07-07] - Production screenshot deck export
+
+### What Was Implemented
+- Captured the live Railway site across desktop, tablet, and mobile viewport modes in both landscape and portrait orientations.
+- Captured 17 production app states, including public entry, invalid PIN, presenter login, editor, host lobby, player lobby, question, answer, review, true/false, slide, podium, and player final states.
+- Built a formatted 19-slide PowerPoint deck with one six-viewport matrix per app state.
+- Added visual flags in the deck for live-site viewport overflow detected during capture.
+- Added a preview contact sheet for quick review of all generated slides.
+
+### Files Modified
+- `outputs/pinboard-live-screenshots/capture-live.mjs` - live production screenshot automation.
+- `outputs/pinboard-live-screenshots/build-deck.mjs` - PowerPoint deck generation from captured screenshots.
+- `outputs/pinboard-live-screenshots/manifest.json` - capture manifest with viewport metadata and overflow flags.
+- `outputs/pinboard-live-screenshots/pinboard-live-device-screenshots.pptx` - generated presentation deck.
+- `outputs/pinboard-live-screenshots/preview-contact-sheet.webp` - visual contact sheet of the generated deck.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- The requested `presentations` output should be a PowerPoint deck generated from the live production screenshots.
+- The six viewport modes are sufficient coverage for desktop landscape, desktop portrait, tablet landscape, tablet portrait, mobile landscape, and mobile portrait.
+
+### Known Issues / Deferred
+- The live site still reports 15 vertical overflow cases in the screenshot manifest, mostly in mobile landscape and editor tablet/mobile states.
+- The player final state still shows the ended slide/answer state instead of the podium; this is preserved as evidence on the final deck slide.
+- No application code was changed in this task.
+
+### Suggested Next Steps
+- Fix the live-site overflow cases flagged in the deck, then rerun `outputs/pinboard-live-screenshots/capture-live.mjs` and regenerate the presentation.
+
+## [2026-07-07] - Shader background palette normalization
+
+### What Was Implemented
+- Replaced the black/gold/lime live shader palette with a brighter cyan, cobalt, and violet palette family.
+- Kept home purple and presenter management blue palettes intact while making lobby, host, waiting, player, and question backgrounds visually consistent.
+- Preserved the red, blue, gold, and green answer-tile colors so answer identity remains familiar and distinct.
+- Captured local host/player verification screenshots for lobby, presenter question, and player answer states in landscape and portrait.
+
+### Files Modified
+- `public/styles.css` - normalized `.shader-blue`, `.shader-question`, `.shader-live-host`, `.shader-waiting`, and `.shader-player` CSS shader variables.
+- `outputs/gradient-palette-check/` - local verification screenshots and computed palette snapshot.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- A bright cyan/cobalt/violet range is the preferred consistent palette for live-game shader backgrounds.
+- Answer-tile gold/green colors should remain because they are functional answer choices, not page background gradients.
+
+### Known Issues / Deferred
+- This was verified locally; Railway production still needs deployment before the live URL reflects the palette change.
+- No layout fixes were included in this pass.
+
+### Suggested Next Steps
+- Deploy the CSS-only palette change to Railway and recapture the affected live screens from production.
+
+## [2026-07-07] - Lobby PIN card clipping fix
+
+### What Was Implemented
+- Fixed the host lobby PIN card so the six-digit game code no longer clips when the QR column is visible.
+- Widened the desktop lobby card, gave the PIN column a larger minimum width, and reduced the maximum PIN font size.
+- Added `min-width: 0` to the join/PIN grid cells so responsive sizing behaves predictably.
+- Recaptured the failing 1366x768 host lobby state and confirmed the PIN, URL, and QR fit within the viewport.
+
+### Files Modified
+- `public/styles.css` - responsive host lobby PIN card sizing and PIN typography.
+- `.gitignore` - ignores generated verification/export artifacts under `outputs/`.
+- `outputs/gradient-palette-check/host-lobby-landscape-fixed.png` - local verification screenshot.
+- `outputs/gradient-palette-check/host-lobby-fixed-metrics.json` - measured no-overflow verification.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- The QR column should remain visible on desktop landscape, so the correct fix is widening/rebalancing the card rather than hiding QR earlier.
+
+### Known Issues / Deferred
+- This was verified locally; production needs deployment before the Railway URL reflects it.
+
+### Suggested Next Steps
+- Recapture the production lobby after deployment to confirm the live URL matches the local verification.
+
+## [2026-07-07] - Energetic UI motion and sharper answer options
+
+### What Was Implemented
+- Added a queued page/phase transition system so live role and phase changes animate smoothly without stacking conflicting DOM swaps.
+- Added keyed number count-up animations for lobby player counts, answer totals, option totals, player scores, leaderboard scores, and podium scores.
+- Added Kahoot-style UI motion: page enter/exit, answer tile entrances, selected-answer feedback, leaderboard row entrances, podium glow, and a stable pulsing primary stage button.
+- Compacted the presenter results layout so question results and leaderboard fit without scrolling at tested desktop landscape and portrait sizes.
+- Made answer selection tiles sharper and higher contrast by preventing disabled answer tiles from inheriting global faded opacity and increasing saturation, edge contrast, text shadow, and shape separation.
+- Deployed the updated app to Railway production and verified the live site.
+
+### Files Modified
+- `public/app.js` - queued render commits, motion signatures, and keyed count-up rendering.
+- `public/styles.css` - page/element motion, reduced-motion-compatible transitions, compact results layout, and sharper answer tile contrast.
+- `outputs/motion-check/` - local and production Playwright smoke harness, screenshots, and metrics.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- CSS/vanilla JavaScript motion is preferable to adding a new animation dependency for this deployment.
+- The energetic motion should emphasize page/phase swaps and live feedback while avoiding layout shifts that interfere with clicking.
+- Answer tiles should remain vivid even when disabled on the presenter side because disabled there means "not clickable", not visually inactive.
+
+### Known Issues / Deferred
+- Full deck recapture was not regenerated in this pass; this task used targeted motion-check screenshots and production smoke metrics.
+
+### Suggested Next Steps
+- Add a repeatable CI-style smoke script for the host/player flow so future UI changes can automatically check overflow, count-up hooks, and production asset presence.
+
+## [2026-07-07] - Full local and production E2E verification
+
+### What Was Implemented
+- Added a comprehensive Playwright E2E harness under ignored outputs for auth, invalid PIN, creator editing, hosting, joining, answering, reveal, leaderboard, slide, podium, player disconnect, and presenter disconnect behavior.
+- Ran the full suite locally against the in-memory server.
+- Ran the full suite against Railway production using Railway-provided presenter credentials.
+- Captured 18 local screenshots and 18 production screenshots with viewport overflow metrics.
+
+### Files Modified
+- `outputs/full-e2e/full-e2e.mjs` - comprehensive browser E2E harness.
+- `outputs/full-e2e/local-report.json` - local verification report.
+- `outputs/full-e2e/production-report.json` - production verification report.
+- `outputs/full-e2e/local/` - local E2E screenshots.
+- `outputs/full-e2e/production/` - production E2E screenshots.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- The full E2E pass should use browser automation and API probes rather than manually testing every button.
+- The Google OAuth external provider itself is not exercised in CI-style E2E; the suite verifies the app auth fallback and production presenter credentials.
+
+### Known Issues / Deferred
+- No app failures were found in the final local or production runs.
+
+### Suggested Next Steps
+- Promote `outputs/full-e2e/full-e2e.mjs` into a tracked test script if this should become a repeatable release gate.
+
+## [2026-07-07] - Join link, spaced PIN, and participant count stability
+
+### What Was Implemented
+- Allowed pasted/displayed PINs with a space, such as `925 035`, by increasing the join input length and normalizing to six digits before joining.
+- Added a clipboard fallback for the host `Copy link` button and verified it writes the current `#player?pin=` URL.
+- Adjusted count-up animation rounding so small count changes like `0 -> 1` do not visually sit on `0` during the animation.
+- Increased the player disconnect grace period to reduce false removals during brief tab reloads or SSE reconnects.
+- Tightened the presenter results/leaderboard layout so four joined players fit in the tested 1366x768 viewport without scrolling.
+- Deployed the fixes to Railway production.
+- Re-ran the full local and Railway production E2E suite with copied-link join, spaced-PIN join, two regular players, answer count updates, disconnect removal, and presenter-left kickout.
+
+### Files Modified
+- `public/app.js` - spaced PIN input normalization, clipboard fallback, and count-up rounding.
+- `server.mjs` - longer player disconnect grace period.
+- `public/styles.css` - compact results/leaderboard layout for no-scroll presenter results.
+- `outputs/full-e2e/full-e2e.mjs` - expanded browser E2E coverage for copied links, spaced PINs, and four-player lobby counts.
+- `outputs/full-e2e/local-report.json` - local verification report.
+- `outputs/full-e2e/production-report.json` - Railway production verification report.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- Keeping the displayed PIN grouped as `000 000` is acceptable as long as the join input accepts the same pasted format.
+- An 8-second player disconnect grace period is a reasonable tradeoff to avoid transient false removals while still removing genuinely disconnected users.
+
+### Known Issues / Deferred
+- The production E2E uses the fallback presenter credential flow; it does not exercise external Google OAuth.
+
+### Suggested Next Steps
+- Promote the expanded E2E harness into a tracked test command so copy-link and participant-count regressions are checked before every deploy.
+
+## [2026-07-07] - Host lobby participant names visibility
+
+### What Was Implemented
+- Moved joined player names from the small absolute-positioned lobby dock into the main host lobby content area so they are visible under the lobby status.
+- Changed the host lobby message from "Waiting for participants..." to a joined count such as "4 participants joined" once players are in the session.
+- Kept the compact player count card in the top-left lobby area while preventing it from competing with the PIN card.
+- Added E2E assertions that fail if the host lobby has joined players but does not show visible player name chips or still shows waiting copy.
+- Deployed the fix to Railway production and verified it with the full production E2E flow.
+
+### Files Modified
+- `public/app.js` - host lobby copy and player-name placement.
+- `public/styles.css` - participant dock sizing and centered lobby participant chips.
+- `outputs/full-e2e/full-e2e.mjs` - visible player-name and lobby-copy assertions.
+- `outputs/full-e2e/local-report.json` - local verification report.
+- `outputs/full-e2e/production-report.json` - Railway production verification report.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- The presenter lobby should still show the small "Players" count card, but player names should be part of the central lobby state.
+
+### Known Issues / Deferred
+- No app failures were found in the final local or production runs.
+
+### Suggested Next Steps
+- Keep the host lobby name-chip assertion in the release gate if the ignored E2E harness is promoted into tracked tests.
+
+## [2026-07-08] - Full Railway logic and viewport verification pass
+
+### What Was Implemented
+- Ran the full local and Railway E2E game flow, API checks, syntax checks, dependency audit, and six-viewport production screenshot capture.
+- Deployed the current working tree to Railway, then deployed a result-badge layout fix as deployment `0b0fbbb5-708e-4840-aa86-09a62b6290b1`.
+- Fixed result answer badges so Correct/Wrong pills no longer collide with answer counts on counted presenter result tiles.
+- Hardened the production screenshot capture harness to configure the editor through Playwright locators instead of fast in-page DOM mutation.
+- Verified final Railway production: 20 E2E assertions passed, 18 E2E screenshots had no overflow, and 102 screenshots across 17 states and 6 viewports had no overflow or missing files.
+
+### Files Modified
+- `public/styles.css` - offset Correct/Wrong badges on answer buttons that also show answer counts.
+- `outputs/pinboard-live-screenshots/capture-live.mjs` - made screenshot deck setup use user-like locator interactions and deterministic correct-answer selection.
+- `outputs/full-e2e/` - refreshed local and production E2E reports/screenshots.
+- `outputs/pinboard-live-screenshots/` - refreshed production six-viewport screenshot manifest and image set.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- Railway production credentials should be supplied via `railway run` and not copied into local files or logs.
+- The ignored `outputs/` harnesses are acceptable verification artifacts for this pass, even though they are not yet tracked release tests.
+
+### Known Issues / Deferred
+- The reusable E2E and screenshot harnesses still live under ignored `outputs/`; they should be promoted into tracked test scripts if they are intended as a permanent release gate.
+
+### Suggested Next Steps
+- Promote `outputs/full-e2e/full-e2e.mjs` and `outputs/pinboard-live-screenshots/capture-live.mjs` into tracked test tooling with package scripts.
+
+## [2026-07-08] - Google presenter projects and saved presentations
+
+### What Was Implemented
+- Reworked the presenter flow so the homepage Presenter entry shows a Google-only sign-in UI with a "Keep me signed in" checkbox.
+- Added PostgreSQL-backed `presentations` storage with presenter ownership checks, lightweight dashboard summaries, full draft loading, and create/update/get/list APIs.
+- Added Google presenter profile storage for name, email, and Google subject, while preserving the existing bootstrap auth endpoint for automated tests and local setup.
+- Changed signed-in presenters to land on a projects dashboard with "Welcome back, name", a blank-draft creation tile, and title-card thumbnails for previous presentations.
+- Made "Create new presentation" immediately create and store a blank valid draft, then open it in the editor.
+- Added manual save, save-before-back, save-before-host-live, tab-hide save, and one-minute autosave for active presentation drafts.
+- Updated local and Railway E2E/screenshot harnesses to use the new dashboard-first flow after seeding a presenter token for automation.
+- Deployed to Railway production as deployment `d64c0d86-763f-450e-a228-2a15aee29d59`.
+
+### Files Modified
+- `server.mjs` - presenter metadata migration, presentation table migration, owner-scoped presentation APIs, and Google profile handling.
+- `public/app.js` - Google-only presenter login UI, projects dashboard, saved editor state, presentation CRUD calls, and autosave behavior.
+- `public/styles.css` - dashboard tiles, title-card thumbnails, editor toolbar, and responsive layout updates.
+- `outputs/full-e2e/full-e2e.mjs` - dashboard-first authenticated setup and create-presentation flow.
+- `outputs/pinboard-live-screenshots/capture-live.mjs` - dashboard screenshot coverage and race-free token seeding for authenticated captures.
+- `outputs/full-e2e/` - refreshed local and production reports/screenshots from the updated flow.
+- `outputs/pinboard-live-screenshots/` - refreshed production screenshot manifest and image set with the dashboard screen.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- "Blank draft" should still be a valid stored presentation: an untitled presentation with one placeholder quiz item, so autosave and host-live validation never store an invalid deck.
+- "Remove login" means remove the email/password fallback from the user-facing UI; the existing `/api/auth` endpoint remains for Railway bootstrap credentials and automated test setup.
+- PostgreSQL should remain the source of truth on Railway; the in-memory path is still kept only for local development when `DATABASE_URL` is absent.
+- Vertical scrolling is acceptable on content-heavy dashboard/editor screens, especially mobile and portrait viewports; horizontal overflow is still treated as a bug.
+
+### Known Issues / Deferred
+- External Google account OAuth was not automated in Playwright; tests seed presenter auth through the backend bootstrap endpoint, then exercise the same signed-in dashboard/editor UI.
+- The reusable E2E and screenshot harnesses still live under ignored `outputs/`; they should be promoted into tracked test scripts if they are intended as a permanent release gate.
+
+### Suggested Next Steps
+- Promote the E2E and screenshot harnesses into `package.json` scripts and move them out of ignored `outputs/`.
+- Add a cleanup/admin path for removing old test presentations created during production verification.
+
+## [2026-07-09] - Presentation routing and management polish
+
+### What Was Implemented
+- Made `/` remain the public join page, added `/presentation/login` for presenter sign-in, `/presentation/homepage` for the presenter dashboard, and `/presentation/<uuid>` for editor deep links.
+- Added logged-out deck deep-link handling that stores the target deck temporarily, redirects to `/presentation/login`, then opens the deck after authentication.
+- Added authenticated presentation duplicate and delete APIs, with the same presenter ownership checks as get/update.
+- Added dashboard three-dot presentation menus with rename, duplicate, and delete controls.
+- Replaced generic thumbnail cards with deterministic generated preview cards derived from the deck title, first item text, and item type.
+- Added visible route link pills to join, login, dashboard, and editor screens.
+- Fixed light-panel contrast by forcing panel/editor text back to the ink color instead of inheriting white shader text.
+
+### Files Modified
+- `server.mjs` - SPA route fallback for presentation URLs, duplicate/delete APIs, owner-checked data operations, duplicate snapshot creation, and Google callback redirect path.
+- `public/app.js` - path-based presenter routing, pending deck login handoff, management menu actions, generated preview metadata, visible page links, and root-based join links.
+- `public/styles.css` - preview card palettes, menu styling, page link pills, responsive adjustments, and panel/editor contrast fixes.
+- `PROJECT_LOG.md` - task record.
+
+### Assumptions Made (flag these for review)
+- Generated topic-style preview cards are preferred over real browser screenshot capture because the current app has no tracked screenshot-rendering dependency.
+- Prompt/confirm dialogs are acceptable for rename/delete confirmation from the three-dot menu in this vanilla JavaScript prototype.
+- Duplicate should create a fresh presentation UUID while preserving the copied deck content and appending `copy` to the title.
+
+### Known Issues / Deferred
+- Cross-user ownership was verified by code path and no-token API checks locally; a second real presenter account was not available in the in-memory local setup for a live cross-account test.
+- Playwright's local package is missing its bundled Chromium, so authenticated screenshots used the MCP browser plus local API seeding rather than a standalone checked-in test script.
+
+### Suggested Next Steps
+- Add a tracked Playwright smoke script once browser binaries are installed or a project-level browser runtime is standardized.
+- Replace browser prompt/confirm with an in-app modal if rename/delete flows need a more polished production interaction.
