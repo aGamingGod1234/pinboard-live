@@ -22,6 +22,7 @@ const DEFAULT_REFILL_TOKENS = 1;
 const DEFAULT_REFILL_INTERVAL_MS = 60_000;
 const DEFAULT_MAX_LIMITER_ENTRIES = 10_000;
 const DEFAULT_IDLE_TTL_MS = 15 * 60_000;
+const MAX_CLIENT_ADDRESS_LENGTH = 128;
 
 export const DEFAULT_BODY_LIMITS = Object.freeze({
   AUTH: 16 * 1024,
@@ -252,6 +253,16 @@ export function isTrustedOrigin(origin, trustedOrigins, { allowMissing = false }
   return normalizedTrustedOrigins.has(normalizedOrigin);
 }
 
+export function shouldPersistPresenterSession(value) {
+  return value === true;
+}
+
+export function resolveClientAddress({ trustProxy = false, realIp, remoteAddress } = {}) {
+  const trustedRealIp = trustProxy && typeof realIp === "string" ? realIp.trim() : "";
+  const socketAddress = typeof remoteAddress === "string" ? remoteAddress.trim() : "";
+  return (trustedRealIp || socketAddress || "unknown").slice(0, MAX_CLIENT_ADDRESS_LENGTH);
+}
+
 export function createTokenBucketLimiter({
   capacity,
   refillTokens = DEFAULT_REFILL_TOKENS,
@@ -286,7 +297,9 @@ export function createTokenBucketLimiter({
     }
 
     if (!bucket) {
-      pruneIdleBuckets(buckets, timestamp, safeIdleTtlMs);
+      if (buckets.size >= safeMaxEntries) {
+        pruneIdleBuckets(buckets, timestamp, safeIdleTtlMs);
+      }
       if (buckets.size >= safeMaxEntries) {
         return limiterCapacityResult(buckets, timestamp, safeIdleTtlMs, safeCapacity);
       }

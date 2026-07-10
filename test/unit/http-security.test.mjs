@@ -320,6 +320,51 @@ test("createTokenBucketLimiter bounds keys and admits new keys after idle expiry
   assert.equal(limiter?.size, 0);
 });
 
+test("createTokenBucketLimiter defers whole-map idle pruning until capacity", () => {
+  let now = 0;
+  const limiter = security.createTokenBucketLimiter?.({
+    capacity: 1,
+    refillTokens: 1,
+    refillIntervalMs: 1000,
+    maxEntries: 2,
+    idleTtlMs: 1000,
+    now: () => now
+  });
+
+  assert.equal(limiter?.consume("client-a").allowed, true);
+  assert.equal(limiter?.consume("client-b").allowed, true);
+  now = 1000;
+  assert.equal(limiter?.consume("client-a").allowed, true);
+  assert.equal(limiter?.size, 2);
+});
+
+test("presenter sessions persist only when the request explicitly opts in", () => {
+  assert.equal(typeof security.shouldPersistPresenterSession, "function");
+  assert.equal(security.shouldPersistPresenterSession?.(true), true);
+  assert.equal(security.shouldPersistPresenterSession?.(false), false);
+  assert.equal(security.shouldPersistPresenterSession?.("true"), false);
+  assert.equal(security.shouldPersistPresenterSession?.(undefined), false);
+});
+
+test("trusted proxy client identity uses only the canonical real-IP header", () => {
+  assert.equal(typeof security.resolveClientAddress, "function");
+  assert.equal(security.resolveClientAddress?.({
+    trustProxy: true,
+    realIp: "198.51.100.24",
+    remoteAddress: "10.0.0.7"
+  }), "198.51.100.24");
+  assert.equal(security.resolveClientAddress?.({
+    trustProxy: true,
+    realIp: "",
+    remoteAddress: "10.0.0.7"
+  }), "10.0.0.7");
+  assert.equal(security.resolveClientAddress?.({
+    trustProxy: false,
+    realIp: "198.51.100.24",
+    remoteAddress: "10.0.0.7"
+  }), "10.0.0.7");
+});
+
 test("createTokenBucketLimiter rejects unsafe configuration and keys", () => {
   assert.throws(() => security.createTokenBucketLimiter?.({ capacity: 0 }), { name: "TypeError" });
 
