@@ -644,7 +644,7 @@ label {
   border-radius: 8px !important;
   background: #fff !important;
   color: var(--ink) !important;
-  cursor: pointer;
+  cursor: pointer !important;
 }
 
 .google-signin-slot [role="button"] > :not(:empty) {
