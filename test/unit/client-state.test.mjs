@@ -29,6 +29,19 @@ test("quiz option helpers enforce limits and promote the nearest correct answer"
   assert.throws(() => removeQuizOption({ ...quizQuestion, options: quizQuestion.options.slice(0, 2), correctOptionIds: ["a"] }, "a"), /at least 2/);
 });
 
+test("added quiz options continue the six-color answer label theme", () => {
+  const fourOptionQuestion = {
+    ...quizQuestion,
+    options: quizQuestion.options.slice(0, 4),
+    correctOptionIds: ["a"]
+  };
+  const withPurple = addQuizOption(fourOptionQuestion, () => "e");
+  const withTeal = addQuizOption(withPurple, () => "f");
+
+  assert.equal(withPurple.options.at(-1).text, "Purple");
+  assert.equal(withTeal.options.at(-1).text, "Teal");
+});
+
 test("correct toggles retain at least one correct answer", () => {
   assert.deepEqual(toggleCorrectOption(quizQuestion, "a").correctOptionIds, ["b", "d", "a"]);
   assert.deepEqual(toggleCorrectOption(quizQuestion, "b").correctOptionIds, ["d"]);

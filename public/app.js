@@ -877,10 +877,8 @@ function renderCreator() {
         <div class="editor-topbar panel">
           <button type="button" class="ghost" data-action="back-to-projects">Back to projects</button>
           <div class="editor-title-block">
-            <p class="eyebrow">Presentation editor</p>
             <h1>${escapeHtml(state.draft.title || "Untitled presentation")}</h1>
             <p class="save-status" role="status" aria-live="polite">${escapeHtml(getSaveStatusText())}</p>
-            ${renderPageLink("Presentation link", getPresentationPath(state.activePresentationId))}
           </div>
           <div class="editor-actions">
             <button type="button" class="secondary" data-action="save-presentation" ${state.savingPresentation ? "disabled" : ""}>Save</button>
@@ -907,19 +905,7 @@ function renderCreator() {
             <label>Deck title <input data-field="deckTitle" maxlength="${MAX_TITLE_LENGTH}" value="${escapeHtml(state.draft.title)}" /></label>
           </div>
           ${state.draft.questions.map(renderQuestionEditor).join("")}
-          <div class="panel creator-launch">
-            <button type="button" class="secondary" data-action="save-presentation" ${state.savingPresentation ? "disabled" : ""}>Save draft</button>
-            <button type="submit">Host live</button>
-          </div>
         </div>
-        <aside class="creator-inspector panel stack">
-          <div>
-            <p class="eyebrow">Limits</p>
-            <h2 class="panel-title">Ready for live play</h2>
-          </div>
-          <p class="muted">Media is checked at 100 MB per item. Player joins have no app-level cap in this prototype.</p>
-          <button type="button" class="secondary" data-action="reset-deck">Reset draft</button>
-        </aside>
       </form>
     </section>
   `;
@@ -1268,11 +1254,15 @@ function renderLiveQuestion(remote, isHost) {
         <span>${formatQuestionLabel(question, remote)}</span>
         <strong>${renderCount(remote.answerCount, `answers:${remote.pin}:${question.id}`)} answers</strong>
       </div>
-      <h1>${escapeHtml(question.text)}</h1>
-      ${isHost && remote.phase === "answering" ? renderStageTimer(remote) : ""}
+      ${isHost ? `
+        <div class="presenter-question-bar">
+          <h1>${escapeHtml(question.text)}</h1>
+          ${remote.phase === "answering" ? renderStageTimer(remote) : ""}
+        </div>
+      ` : `<h1>${escapeHtml(question.text)}</h1>`}
       ${isHost ? renderPresenterQuestionFrame(question, remote) : `<div class="question-media-frame">${renderMedia(question.media)}</div>`}
       ${question.kind === "slide" ? "" : `
-        <div class="answer-grid">
+        <div class="answer-grid" data-option-count="${question.options.length}">
           ${question.options.map((option, index) => {
             const count = remote.answerCounts?.[option.id] ?? 0;
             const isSelected = selectedOptionIds.includes(option.id);
@@ -1301,10 +1291,6 @@ function renderPresenterQuestionFrame(question, remote) {
     <div class="presenter-question-frame presenter-question-frame-media">
       <div class="presenter-media-display">
         ${renderMedia(question.media)}
-      </div>
-      <div class="host-answer-meter">
-        ${renderCount(remote.answerCount, `host-meter:${remote.pin}:${question.id}`, "", "strong")}
-        <span>Answers</span>
       </div>
     </div>
   `;
@@ -2098,18 +2084,27 @@ function renderPresenterResults(remote) {
   return `
     <section class="presenter-results">
       <h1>${escapeHtml(question.text)}</h1>
-      ${question.media ? `<div class="presenter-result-media">${renderMedia(question.media)}</div>` : ""}
-      <div class="answer-distribution-chart" data-option-count="${question.options.length}">
-        ${question.options.map((option, index) => {
-          const count = Number(remote.answerCounts?.[option.id] ?? 0);
-          const percentage = submitted > 0 ? Math.round(count / submitted * 100) : 0;
-          const correct = question.correctOptionIds.includes(option.id);
-          return `<div class="answer-result-bar ${correct ? "is-correct" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" aria-label="${escapeHtml(option.text)}, ${count} selections, ${percentage} percent${correct ? ", correct answer" : ""}">
-            <svg class="answer-result-fill" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="${100 - percentage}" width="100" height="${percentage}" /></svg>
-            <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
-            <strong>${escapeHtml(option.text)}</strong><span>${count} · ${percentage}%</span>${correct ? "<em>✓ Correct</em>" : ""}
-          </div>`;
-        }).join("")}
+      <div class="answer-distribution-panel">
+        <div class="answer-distribution-chart" data-option-count="${question.options.length}">
+          ${question.options.map((option, index) => {
+            const count = Number(remote.answerCounts?.[option.id] ?? 0);
+            const percentage = submitted > 0 ? Math.round(count / submitted * 100) : 0;
+            const barHeight = Math.max(percentage, 4);
+            const correct = question.correctOptionIds.includes(option.id);
+            return `<div class="answer-result-bar ${correct ? "is-correct" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" aria-label="${escapeHtml(option.text)}, ${count} selections, ${percentage} percent${correct ? ", correct answer" : ""}">
+              <strong class="answer-result-count">${count}</strong>
+              <div class="answer-result-column-track" aria-hidden="true">
+                <svg class="answer-result-column" viewBox="0 0 100 100" preserveAspectRatio="none"><rect x="0" y="${100 - barHeight}" width="100" height="${barHeight}" /></svg>
+              </div>
+              <div class="answer-result-label">
+                <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
+                <strong>${escapeHtml(option.text)}</strong>
+                <span>${percentage}%</span>
+                ${correct ? "<em>✓ Correct</em>" : ""}
+              </div>
+            </div>`;
+          }).join("")}
+        </div>
       </div>
     </section>`;
 }
@@ -2425,9 +2420,15 @@ function addQuestion() {
 function addAnswer(questionId) {
   const question = findQuestion(questionId);
   if (!question) return;
+  const creatorMain = document.querySelector("[data-creator-main]");
+  const scrollTop = creatorMain?.scrollTop ?? 0;
   Object.assign(question, addQuizOption(question, createClientId));
   markPresentationDirty();
   render();
+  requestAnimationFrame(() => {
+    const updatedCreatorMain = document.querySelector("[data-creator-main]");
+    if (updatedCreatorMain) updatedCreatorMain.scrollTop = scrollTop;
+  });
 }
 
 function removeAnswer(questionId, optionId) {

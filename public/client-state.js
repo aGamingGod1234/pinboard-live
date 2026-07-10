@@ -145,13 +145,18 @@ export function shouldShowLocalPresenterAuth(localAuthEnabled, googleClientId) {
   return localAuthEnabled === true && !googleClientId;
 }
 
+const QUIZ_OPTION_LABELS = ["Red", "Blue", "Gold", "Green", "Purple", "Teal"];
+
 export function addQuizOption(question, createId) {
   if (question.kind !== "quiz") throw new TypeError("Only regular quiz answers can be added.");
   if (question.options.length >= 6) throw new RangeError("Quiz questions can have at most 6 answers.");
   const id = createId();
   return {
     ...question,
-    options: [...question.options, { id, text: `Answer ${question.options.length + 1}` }]
+    options: [...question.options, {
+      id,
+      text: QUIZ_OPTION_LABELS[question.options.length]
+    }]
   };
 }
 
