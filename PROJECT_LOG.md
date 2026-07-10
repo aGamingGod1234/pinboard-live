@@ -832,6 +832,7 @@
 - Added player selection limits, explicit multi-answer submission, post-submit waiting copy, and correct/partial/incorrect/timeout reveal cards.
 - Restricted question media to one signature-validated raster image with immediate preview and hover/focus removal.
 - Added responsive desktop/mobile layouts and automated browser coverage for editor, reconnect, results, multi-answer, partial-credit, and timeout flows.
+- Removed presenter email disclosure from production startup logs and added credential-redaction regression coverage.
 
 ### Files Modified
 - `src/session-domain.mjs` — array submissions, award calculation, outcomes, and idempotent scoring.
@@ -850,9 +851,18 @@
 - A player's selection limit equals the number of configured correct answers, as approved.
 
 ### Known Issues / Deferred
-- The PostgreSQL two-replica integration test requires `TEST_DATABASE_URL`; local verification may skip it when no local test database is configured. GitHub CI must run it against PostgreSQL 16 before merge.
-- Final GitHub PR, CI, Railway deployment, production logs, and live-URL evidence will be appended after publication.
+- Local verification skipped the PostgreSQL two-replica test because `TEST_DATABASE_URL` was absent; both GitHub CI runs passed it against PostgreSQL 16.
+- The Google OAuth client already contains the exact Railway origin and callback and was re-saved in Google Cloud. Google Identity still reported that the origin was not allowed immediately afterward; Google documents a 5-minute-to-hours propagation window. The production button is visible and enabled, but an interactive Google account completion remains pending provider propagation.
+- Google Identity emits inline-style CSP warnings. The application keeps its strict CSP rather than adding `unsafe-inline`; provider-generated styling remains cosmetic while the button stays visible.
 
 ### Suggested Next Steps
-- Verify the PostgreSQL concurrency job and all review checks in GitHub.
-- Deploy the exact merged commit to Railway and exercise the production editor, presenter, and player flows on desktop and mobile.
+- Recheck Google sign-in after the provider propagation window. If the origin rejection persists, replace the aging Google web client and update `GOOGLE_CLIENT_ID` rather than weakening CSP.
+- Run a staged attendance/load test before making public concurrency guarantees.
+
+### Release Evidence
+- Feature PR [#8](https://github.com/aGamingGod1234/pinboard-live/pull/8) merged as `37d2d2a7e84f04e54990d18fd0ccb7d78d8f44ef`; privacy hotfix PR [#9](https://github.com/aGamingGod1234/pinboard-live/pull/9) merged into final application commit `95bcf45c1127834cd34655c88ef92e0b51edc42f`.
+- GitHub CI and CodeRabbit passed on both PRs. The final CI run covered PostgreSQL 16, all unit/integration checks, and all desktop/mobile Playwright tests.
+- Local final gate: 40 unit tests passed; 14 runnable integration tests passed with the single documented local PostgreSQL skip; 7 Playwright tests passed; production dependency audit found zero vulnerabilities.
+- Railway deployment `01344397-65f7-4c83-aac1-91551f2fc2d6` reached `SUCCESS`; the prior revision was removed. Fresh deployment logs contained no runtime errors or presenter identity.
+- Production `/health` returned HTTP 200 with `{ ok: true, database: "postgres" }`.
+- Production browser audit created and deleted a temporary two-question deck, verified six answer options, two correct markers, a results-only presenter graph, the separate leaderboard transition, a centered question image, a partial player outcome worth `+196 points`, and zero horizontal mobile overflow.
