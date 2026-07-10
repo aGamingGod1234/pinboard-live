@@ -7,6 +7,42 @@ import {
   loginPresenter
 } from "./support.mjs";
 
+const GOOGLE_BUTTON_MAX_HEIGHT = 56;
+const GOOGLE_ICON_MAX_SIZE = 24;
+
+test("Google presenter button stays compact when provider inline styles are unavailable", async ({ page }) => {
+  await page.goto("/presentation/login");
+
+  const metrics = await page.evaluate(() => {
+    const slot = document.createElement("div");
+    slot.className = "google-signin-slot";
+    slot.dataset.googleSignin = "";
+    slot.innerHTML = `
+      <div>
+        <div role="button">
+          <span><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M0 0h48v48H0z"></path></svg></span>
+          <span>Continue with Google</span>
+        </div>
+      </div>
+    `;
+    document.querySelector(".presenter-login-card")?.append(slot);
+
+    const button = slot.querySelector("[role='button']");
+    const icon = slot.querySelector("svg");
+    return {
+      slotHeight: slot.getBoundingClientRect().height,
+      buttonHeight: button?.getBoundingClientRect().height ?? 0,
+      iconWidth: icon?.getBoundingClientRect().width ?? 0,
+      iconHeight: icon?.getBoundingClientRect().height ?? 0
+    };
+  });
+
+  expect(metrics.slotHeight).toBeLessThanOrEqual(GOOGLE_BUTTON_MAX_HEIGHT);
+  expect(metrics.buttonHeight).toBeLessThanOrEqual(GOOGLE_BUTTON_MAX_HEIGHT);
+  expect(metrics.iconWidth).toBeLessThanOrEqual(GOOGLE_ICON_MAX_SIZE);
+  expect(metrics.iconHeight).toBeLessThanOrEqual(GOOGLE_ICON_MAX_SIZE);
+});
+
 test("presenter creates a quiz and completes a resumable two-context live session", async ({ browser, page }) => {
   let presenterErrors;
   const playerContext = await browser.newContext({ baseURL: BASE_URL });
