@@ -269,7 +269,6 @@ async function startServer() {
 
   server.listen(PORT, HOST, () => {
     console.log(`Pinboard Live running at http://localhost:${PORT}`);
-    console.log(`Presenter email: ${BOOTSTRAP_PRESENTER_EMAIL}`);
   });
 }
 
