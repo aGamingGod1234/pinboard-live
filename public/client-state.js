@@ -135,6 +135,17 @@ export function shouldRetainResumeCredential(failure) {
 }
 
 /**
+ * Keep the password form as a fallback only when Google sign-in is unavailable.
+ *
+ * @param {boolean} localAuthEnabled
+ * @param {string} googleClientId
+ * @returns {boolean}
+ */
+export function shouldShowLocalPresenterAuth(localAuthEnabled, googleClientId) {
+  return localAuthEnabled === true && !googleClientId;
+}
+
+/**
  * Build a unique accessible name for a shape-only answer control.
  *
  * @param {{ index: number, tone: string, shape: string }} answer

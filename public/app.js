@@ -4,6 +4,7 @@ import {
   createDraftSaveCoordinator,
   shouldAcceptLiveState,
   shouldPatchLiveState,
+  shouldShowLocalPresenterAuth,
   shouldRetainResumeCredential
 } from "./client-state.js";
 
@@ -668,9 +669,9 @@ function renderHome() {
   return renderJoinScreen(true);
 }
 
-function renderPageLink(label, path) {
+function renderPageLink(label, path, showPath = true) {
   const normalizedPath = path || "/";
-  const shouldShowPath = normalizedPath !== "/";
+  const shouldShowPath = showPath && normalizedPath !== "/";
   const rootClass = normalizedPath === "/" ? " is-root-link" : "";
   return `
     <a class="page-link-pill${rootClass}" href="${escapeHtml(normalizedPath)}" aria-label="${escapeHtml(label)}">
@@ -724,18 +725,19 @@ function renderJoinScreen(showPresenterLink = false) {
 }
 
 function renderPresenterLogin() {
+  const showLocalAuth = shouldShowLocalPresenterAuth(state.localAuthEnabled, state.googleClientId);
   return `
     <section class="shader-screen shader-management presenter-login-shell" data-motion-trigger="ambient-drift">
       <div class="screen-action-row">
-        ${renderPageLink("Presenter login", PRESENTATION_LOGIN_PATH)}
+        ${renderPageLink("Presenter login", PRESENTATION_LOGIN_PATH, false)}
       </div>
       <div class="login-panel presenter-login-card stack">
         <div>
           <p class="eyebrow">Presenter</p>
           <h1 class="panel-title">Sign in to Pinboard</h1>
-          <p class="muted">Use your presenter account${state.googleClientId ? " or Google" : ""} to create, save, and host presentations.</p>
+          <p class="muted">${state.googleClientId ? "Continue with Google" : "Use your presenter account"} to create, save, and host presentations.</p>
         </div>
-        ${state.localAuthEnabled ? `
+        ${showLocalAuth ? `
           <form class="stack" data-action="auth">
             <label>Email
               <input type="email" autocomplete="username" data-field="presenterEmail" value="${escapeHtml(state.presenterEmail)}" required />

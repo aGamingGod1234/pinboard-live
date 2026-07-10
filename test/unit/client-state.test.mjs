@@ -6,6 +6,7 @@ import {
   createClientId,
   createDraftSaveCoordinator,
   shouldAcceptLiveState,
+  shouldShowLocalPresenterAuth,
   shouldPatchLiveState,
   shouldRetainResumeCredential
 } from "../../public/client-state.js";
@@ -118,6 +119,12 @@ test("retryable resume failures retain the saved credential", () => {
   for (const status of [400, 401, 403, 404, 409, 410, 422]) {
     assert.equal(shouldRetainResumeCredential({ status }), false, String(status));
   }
+});
+
+test("Google sign-in replaces the visible local presenter form", () => {
+  assert.equal(shouldShowLocalPresenterAuth(true, ""), true);
+  assert.equal(shouldShowLocalPresenterAuth(true, "google-client-id"), false);
+  assert.equal(shouldShowLocalPresenterAuth(false, ""), false);
 });
 
 test("answer accessible names distinguish shape-only controls", () => {
