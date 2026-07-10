@@ -5,12 +5,22 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "dev": "node --watch server.mjs"
+    "dev": "node --watch server.mjs",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "node --test test/unit/*.test.mjs",
+    "test:integration": "node --test test/integration/*.test.mjs",
+    "test:e2e": "playwright test",
+    "test:live": "playwright test --grep @live",
+    "check": "npm run test && node --check server.mjs && node --check public/app.js && node --check public/client-state.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }
