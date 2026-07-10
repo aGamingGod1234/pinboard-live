@@ -730,3 +730,29 @@
 
 ### Suggested Next Steps
 - Add a presenter music toggle or volume slider if the default background music should be adjustable during live hosting.
+
+## [2026-07-10] — Logic, security, and UX codebase review
+
+### What Was Implemented
+- Completed a read-only repository review across application logic, security, UX, accessibility, deployment configuration, and runtime behavior.
+- Added a prioritized evidence-backed report with exact source locations and recommended remediation order.
+- Ran syntax checks, a production dependency audit, a local API/SSE smoke flow, disconnect/reconnect checks, and browser UX checks.
+
+### Files Modified
+- `CODEBASE_REVIEW.md` — detailed review findings, verification evidence, and recommended implementation sequence.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- The app is intended for public Railway deployment with anonymous, untrusted participants.
+- Authenticated presenter content is treated as untrusted when it renders in another user's browser.
+- Railway edge policies and current live environment values were not inspected.
+
+### Known Issues / Deferred
+- No application logic, security, or UX fixes were implemented in this review.
+- This was not a formal penetration test, production load test, or multi-instance concurrency test.
+- The repository still has no tracked test, lint, typecheck, or browser-test package scripts.
+
+### Suggested Next Steps
+- Fix the stored-XSS and oversized-request/abuse-control findings first.
+- Replace last-write-wins room snapshots with serialized/versioned mutations and durable reconnectable player records.
+- Move media to object storage, then address scoped rendering, save revisioning, accessibility, and completion flows.
