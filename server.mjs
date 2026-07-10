@@ -139,9 +139,9 @@ const { Pool } = pg;
 /** @typedef {"quiz" | "true_false" | "slide"} QuestionKind */
 /** @typedef {{ id: string, text: string }} Option */
 /** @typedef {{ id: string, name: string, type: string, size: number, url: string }} MediaAsset */
-/** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, timerSeconds: number, options: Option[], correctOptionId: string | null, media: MediaAsset | null }} Question */
+/** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, timerSeconds: number, options: Option[], correctOptionIds: string[], media: MediaAsset | null }} Question */
 /** @typedef {{ id: string, nickname: string, score: number, joinedAt: number, connected: boolean, lastSeenAt: number, resumeTokenHash: string, leftAt: number | null }} Player */
-/** @typedef {{ optionId: string, answeredAt: number }} Answer */
+/** @typedef {{ selectedOptionIds: string[], answeredAt: number }} Answer */
 /** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, playerTokenHash: string | null, presenterTokenHash: string | null, heartbeat: NodeJS.Timeout | null, backpressured: boolean, pendingStatePayload: string | null, pendingAnswerPayload: string | null, drainHandler: (() => void) | null }} Client */
 /** @typedef {{ id: string, email: string, name: string, passwordHash: string, googleSub?: string | null }} Presenter */
 /** @typedef {{ id: string, presenterId: string, title: string, snapshot: { title: string, questions: Question[] }, createdAt: string, updatedAt: string, version: number }} Presentation */
@@ -1879,7 +1879,8 @@ function getStateForRole(session, role, playerId) {
     leaderboard: buildLeaderboard(session),
     recentPlayers: role === "host" ? buildRecentPlayers(session) : [],
     me: player ? { id: player.id, nickname: player.nickname, score: player.score } : null,
-    selectedOptionId: playerId ? session.answers.get(playerId)?.optionId ?? null : null,
+    selectedOptionIds: playerId ? session.answers.get(playerId)?.selectedOptionIds ?? [] : [],
+    selectedOptionId: playerId ? session.answers.get(playerId)?.selectedOptionIds?.[0] ?? null : null,
     endedReason: session.endedReason,
     endedAt: session.endedAt,
     mediaLimitBytes: MAX_MEDIA_BYTES
@@ -1898,7 +1899,7 @@ function serializeQuestion(question, showAnswers, pin) {
       url: `${question.media.url.split("?", 1)[0]}?pin=${encodeURIComponent(pin)}`
     } : null,
     options: question.options,
-    correctOptionId: showAnswers ? question.correctOptionId : null
+    correctOptionIds: showAnswers ? question.correctOptionIds : []
   };
 }
 
@@ -1906,8 +1907,10 @@ function buildAnswerCounts(session, question) {
   const counts = Object.fromEntries(question.options.map((option) => [option.id, 0]));
 
   for (const answer of session.answers.values()) {
-    if (Object.hasOwn(counts, answer.optionId)) {
-      counts[answer.optionId] += 1;
+    for (const optionId of answer.selectedOptionIds ?? []) {
+      if (Object.hasOwn(counts, optionId)) {
+        counts[optionId] += 1;
+      }
     }
   }
 
@@ -2116,7 +2119,7 @@ function normalizePresentationQuestion(input, index) {
       points: 0,
       timerSeconds: 0,
       options: [],
-      correctOptionId: null,
+      correctOptionIds: [],
       media
     };
   }
@@ -2124,14 +2127,10 @@ function normalizePresentationQuestion(input, index) {
   const options = normalizePresentationOptions(input.options);
   const points = normalizePoints(input.points);
   const timerSeconds = normalizeTimerSeconds(input.timerSeconds);
-  const correctOptionId = readString(input.correctOptionId, `Item ${index + 1} correct option`);
+  const correctOptionIds = normalizeCorrectOptionIds(input, options, kind, `Item ${index + 1}`);
 
   if (kind === "true_false" && options.length !== 2) {
     throw new HttpError(400, `Item ${index + 1} true or false questions need exactly 2 options.`);
-  }
-
-  if (!options.some((option) => option.id === correctOptionId)) {
-    throw new HttpError(400, `Item ${index + 1} needs a valid correct option.`);
   }
 
   return {
@@ -2141,7 +2140,7 @@ function normalizePresentationQuestion(input, index) {
     points,
     timerSeconds,
     options,
-    correctOptionId,
+    correctOptionIds,
     media
   };
 }
@@ -2165,6 +2164,22 @@ function normalizePresentationOptions(input) {
   });
 }
 
+function normalizeCorrectOptionIds(input, options, kind, itemLabel) {
+  const candidateIds = Array.isArray(input.correctOptionIds)
+    ? input.correctOptionIds
+    : typeof input.correctOptionId === "string" ? [input.correctOptionId] : [];
+  const correctOptionIds = candidateIds.map((id, index) => readString(id, `${itemLabel} correct option ${index + 1}`));
+  const uniqueIds = [...new Set(correctOptionIds)];
+  const validIds = new Set(options.map((option) => option.id));
+  if (uniqueIds.length === 0 || uniqueIds.length !== correctOptionIds.length || uniqueIds.some((id) => !validIds.has(id))) {
+    throw new HttpError(400, `${itemLabel} needs unique valid correct options.`);
+  }
+  if (kind === "true_false" && uniqueIds.length !== 1) {
+    throw new HttpError(400, `${itemLabel} true or false questions need exactly 1 correct option.`);
+  }
+  return uniqueIds;
+}
+
 function normalizeQuestion(input, index) {
   if (!input || typeof input !== "object") {
     throw new HttpError(400, `Item ${index + 1} is required.`);
@@ -2182,7 +2197,7 @@ function normalizeQuestion(input, index) {
       points: 0,
       timerSeconds: 0,
       options: [],
-      correctOptionId: null,
+      correctOptionIds: [],
       media
     };
   }
@@ -2190,14 +2205,10 @@ function normalizeQuestion(input, index) {
   const options = normalizeOptions(input.options);
   const points = normalizePoints(input.points);
   const timerSeconds = normalizeTimerSeconds(input.timerSeconds);
-  const correctOptionId = readString(input.correctOptionId, `Item ${index + 1} correct option`);
+  const correctOptionIds = normalizeCorrectOptionIds(input, options, kind, `Item ${index + 1}`);
 
   if (kind === "true_false" && options.length !== 2) {
     throw new HttpError(400, `Item ${index + 1} true or false questions need exactly 2 options.`);
-  }
-
-  if (!options.some((option) => option.id === correctOptionId)) {
-    throw new HttpError(400, `Item ${index + 1} needs a valid correct option.`);
   }
 
   return {
@@ -2207,7 +2218,7 @@ function normalizeQuestion(input, index) {
     points,
     timerSeconds,
     options,
-    correctOptionId,
+    correctOptionIds,
     media
   };
 }
@@ -3240,7 +3251,7 @@ function createBlankPresentationSnapshot() {
         points: 1000,
         timerSeconds: DEFAULT_TIMER_SECONDS,
         options,
-        correctOptionId: options[0].id,
+        correctOptionIds: [options[0].id],
         media: null
       }
     ]

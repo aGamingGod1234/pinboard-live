@@ -267,6 +267,41 @@ test("presentation saves reject a stale revision", async () => {
   assert.equal((await staleSave.json()).code, "PRESENTATION_VERSION_CONFLICT");
 });
 
+test("presentation saves normalize multiple and legacy correct option fields", async () => {
+  const presenter = await loginPresenter();
+  const createResponse = await postJson("/api/presentations", {}, presenterMutationHeaders(presenter));
+  const created = (await createResponse.json()).presentation;
+  const optionIds = [randomUUID(), randomUUID(), randomUUID()];
+  const question = {
+    id: randomUUID(),
+    kind: "quiz",
+    text: "Choose two",
+    points: 1_000,
+    timerSeconds: 30,
+    options: optionIds.map((id, index) => ({ id, text: `Option ${index + 1}` })),
+    correctOptionIds: optionIds.slice(0, 2),
+    media: null
+  };
+
+  const multiSave = await putJson(`/api/presentations/${created.id}`, {
+    snapshot: { title: "Multiple correct", questions: [question] },
+    expectedVersion: created.version
+  }, presenterMutationHeaders(presenter));
+  assert.equal(multiSave.status, 200);
+  const multiSaved = (await multiSave.json()).presentation;
+  assert.deepEqual(multiSaved.snapshot.questions[0].correctOptionIds, optionIds.slice(0, 2));
+
+  const legacySave = await putJson(`/api/presentations/${created.id}`, {
+    snapshot: {
+      title: "Legacy correct",
+      questions: [{ ...question, correctOptionIds: undefined, correctOptionId: optionIds[0] }]
+    },
+    expectedVersion: multiSaved.version
+  }, presenterMutationHeaders(presenter));
+  assert.equal(legacySave.status, 200);
+  assert.deepEqual((await legacySave.json()).presentation.snapshot.questions[0].correctOptionIds, [optionIds[0]]);
+});
+
 async function loginPresenter() {
   const response = await postJson("/api/auth", {
     email: TEST_EMAIL,
