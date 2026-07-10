@@ -756,3 +756,38 @@
 - Fix the stored-XSS and oversized-request/abuse-control findings first.
 - Replace last-write-wins room snapshots with serialized/versioned mutations and durable reconnectable player records.
 - Move media to object storage, then address scoped rendering, save revisioning, accessibility, and completion flows.
+
+## [2026-07-10] — Full logic, security, UX hardening and Railway release
+
+### What Was Implemented
+- Replaced last-write-wins live-session snapshots with versioned PostgreSQL records, normalized players/answers, durable reconnect tokens, explicit departure state, and serialized presenter mutations.
+- Hardened presenter/player authentication, CSRF and origin enforcement, constant-time secret handling, request/body/media limits, trusted-proxy address handling, rate limiting, CSP/security headers, and safe client rendering.
+- Corrected editor save conflicts, anonymous auth loading, keyboard menus, answer accessibility, player capacity/nickname reuse, leave cleanup, reconnect/resume, and departed-player leaderboard labels.
+- Added unit, integration, PostgreSQL concurrency, desktop presenter, mobile player, and CI coverage; merged PRs #2, #3, and #4 at `f0d3535d33c357247da83da1a6d0e7b14e5101ea`.
+- Backed up and restore-rehearsed production PostgreSQL before migration. Backup: `/var/lib/postgresql/data/pgdata/pre-hardening-20260710T034600Z.dump`; SHA-256: `8d85b6087b0b4f05e9e896cc8f9356dd9ee18e66a1959dab736f818206cf190d`.
+- Deployed the merged commit to Railway as `745d1f08-c8c1-4874-8718-7a13ac92a859` and completed a public desktop/mobile lifecycle smoke test with cleanup.
+- Rotated the PostgreSQL password after it appeared in a private command transcript; verified the new credential was accepted, the prior credential rejected, and Railway references synchronized.
+
+### Files Modified
+- `server.mjs` — authoritative session logic, persistence, authentication, API validation, concurrency, departure, and recovery behavior.
+- `public/app.js`, `public/client-state.js`, `public/styles.css` — safe rendering, editor/player UX, accessibility, reconnect, leave, and leaderboard behavior.
+- `src/http-security.mjs`, `src/session-domain.mjs` — centralized HTTP security and pure session transitions.
+- `test/unit/*.test.mjs`, `test/integration/*.test.mjs`, `tests/e2e/*.spec.mjs` — regression, PostgreSQL, desktop, and mobile verification.
+- `.github/workflows/ci.yml`, `playwright.config.mjs`, `package.json`, `package-lock.json` — automated verification tooling.
+- `.env.example`, `README.md`, `CODEBASE_REVIEW.md`, and hardening plan/spec documents — deployment and maintenance guidance.
+- `PROJECT_LOG.md` — production release record.
+
+### Assumptions Made (flag these for review)
+- Railway's `X-Real-IP` is the only trusted client-address header when `TRUST_PROXY` is enabled; forwarded-for input is intentionally ignored.
+- A deliberate leave releases the nickname/capacity slot while retaining the departed attempt for historical scoring, visibly labeled `(left)`.
+- Local presenter authentication remains the production login path until an approved Google OAuth client includes the Railway origin.
+
+### Known Issues / Deferred
+- Google sign-in is disabled in production because the configured client rejected the Railway origin; local presenter authentication is verified and remains available.
+- Rate-limit buckets are process-local. A shared limiter is required before horizontally scaling beyond one application instance.
+- High-attendance capacity was not load-tested, and media remains better suited to object storage/CDN for larger deployments.
+
+### Suggested Next Steps
+- Register the Railway origin on the approved Google OAuth client before restoring `GOOGLE_CLIENT_ID`.
+- Run a staged concurrency/load test against realistic attendance targets before marketing capacity guarantees.
+- Move uploaded media to object storage/CDN and add shared rate limiting before multi-instance scaling.
