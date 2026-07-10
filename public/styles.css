@@ -8,6 +8,7 @@
   --blue: #1368ce;
   --gold: #d99a00;
   --green: #26890c;
+  --success: #156c34;
   --purple: #6f2df4;
   --teal: #00a6a6;
   --shadow: 0 22px 60px rgba(7, 14, 34, 0.2);
@@ -43,7 +44,7 @@ textarea {
 }
 
 button {
-  min-height: 42px;
+  min-height: 44px;
   border: 1px solid var(--ink);
   border-radius: var(--radius);
   background: var(--ink);
@@ -51,6 +52,7 @@ button {
   cursor: pointer;
   padding: 0 14px;
   font-weight: 850;
+  touch-action: manipulation;
 }
 
 button.secondary {
@@ -64,17 +66,27 @@ button.ghost {
   color: var(--muted);
 }
 
+button.secondary:hover:not(:disabled),
+button.ghost:hover:not(:disabled) {
+  background: rgba(19, 104, 206, 0.08);
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+button[aria-busy="true"] {
+  cursor: progress;
 }
 
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 3px solid rgba(255, 255, 255, 0.72);
+  outline: 2px solid #fff;
   outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--blue);
 }
 
 input,
@@ -220,6 +232,10 @@ label {
   font-weight: 950;
   text-align: left;
   pointer-events: auto;
+}
+
+.message-layer > .notice {
+  background: var(--success);
 }
 
 .message-layer button {
@@ -478,7 +494,7 @@ label {
 
 .glass-pill {
   display: inline-flex;
-  min-height: 42px;
+  min-height: 44px;
   align-items: center;
   border: 0;
   border-radius: var(--radius);
@@ -577,7 +593,7 @@ label {
 
 .join-footer {
   display: grid;
-  gap: 8px;
+  gap: 0;
   justify-items: center;
   padding-bottom: 12px;
   color: rgba(255, 255, 255, 0.95);
@@ -719,6 +735,10 @@ label {
   color: #fff;
 }
 
+.dashboard-sign-out {
+  flex: 0 0 auto;
+}
+
 .dashboard-header .page-link-pill,
 .editor-title-block .page-link-pill {
   margin-top: 10px;
@@ -833,7 +853,7 @@ label {
 .presentation-menu-button {
   display: grid;
   width: 32px;
-  min-height: 32px;
+  min-height: 40px;
   place-items: center;
   border: 1px solid rgba(255, 255, 255, 0.42);
   border-radius: 999px;
@@ -859,7 +879,7 @@ label {
 .presentation-menu button {
   display: flex;
   align-items: center;
-  min-height: 36px;
+  min-height: 44px;
   justify-content: start;
   border: 0;
   border-radius: 0;
@@ -1657,6 +1677,19 @@ label {
 
 .player-score-dock span {
   font-size: 1.3rem;
+}
+
+.player-score-dock small {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.player-ready-card .eyebrow {
+  color: #fff;
 }
 
 .player-score-dock em {
@@ -3342,6 +3375,18 @@ label {
   .answer-distribution-panel .answer-result-bar {
     height: 220px;
     min-height: 0;
+  }
+}
+
+@media (pointer: coarse) {
+  .message-layer button,
+  .page-link-pill,
+  .presentation-menu-button,
+  .stage-tools button,
+  .option-remove,
+  .question-media-remove {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 

@@ -13,7 +13,10 @@ test("mobile player can join and use named answer controls without horizontal ov
 
   try {
     await joinAsPlayer(page, host.pin, "Mobile player");
+    const waitingPinColor = await page.locator(".player-ready-card .eyebrow").evaluate((pin) => getComputedStyle(pin).color);
+    expect(waitingPinColor).toBe("rgb(255, 255, 255)");
     await apiHostAction(request, host, "start");
+    await expect(page.locator(".player-score-dock").getByText("Score", { exact: true })).toBeVisible();
 
     const answers = [
       "Option 1, red triangle: Red",

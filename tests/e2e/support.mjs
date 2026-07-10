@@ -102,7 +102,7 @@ export async function joinAsPlayer(page, pin, nickname) {
   await page.goto("/");
   await page.getByLabel("Game PIN", { exact: true }).fill(pin);
   await page.getByLabel("Nickname", { exact: true }).fill(nickname);
-  await page.getByRole("button", { name: "Enter", exact: true }).click();
+  await page.getByRole("button", { name: "Join game", exact: true }).click();
   await expect(page.getByRole("heading", { name: "You're in" })).toBeVisible();
 }
 
