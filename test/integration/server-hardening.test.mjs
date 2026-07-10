@@ -235,6 +235,20 @@ test("media is signature-validated, stored separately, and supports byte ranges"
     body: Buffer.from("<svg><script>alert(1)</script></svg>")
   });
   assert.equal(activeContent.status, 415);
+
+  const videoContent = await fetch(`${baseUrl}/api/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "video/mp4",
+      "X-File-Name": encodeURIComponent("clip.mp4"),
+      Cookie: login.cookie,
+      "X-CSRF-Token": login.csrfToken,
+      Origin: baseUrl
+    },
+    body: Buffer.from("000000186674797069736f6d00000200", "hex")
+  });
+  assert.equal(videoContent.status, 415);
+  assert.match((await videoContent.json()).error, /image/i);
 });
 
 test("trusted real-IP headers rate-limit distinct originating clients independently", async () => {

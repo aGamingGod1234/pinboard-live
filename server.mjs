@@ -20,6 +20,7 @@ import {
   validateContentLength
 } from "./src/http-security.mjs";
 import {
+  calculateQuestionAward,
   DomainError,
   endSession as endSessionDomain,
   recordAnswer,
@@ -135,17 +136,17 @@ const INSTANCE_ID = randomUUID();
 const scryptAsync = promisify(scrypt);
 const { Pool } = pg;
 
-/** @typedef {"lobby" | "question" | "answering" | "results" | "ended"} Phase */
+/** @typedef {"lobby" | "question" | "answering" | "results" | "leaderboard" | "ended"} Phase */
 /** @typedef {"quiz" | "true_false" | "slide"} QuestionKind */
 /** @typedef {{ id: string, text: string }} Option */
 /** @typedef {{ id: string, name: string, type: string, size: number, url: string }} MediaAsset */
-/** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, timerSeconds: number, options: Option[], correctOptionId: string | null, media: MediaAsset | null }} Question */
+/** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, timerSeconds: number, options: Option[], correctOptionIds: string[], media: MediaAsset | null }} Question */
 /** @typedef {{ id: string, nickname: string, score: number, joinedAt: number, connected: boolean, lastSeenAt: number, resumeTokenHash: string, leftAt: number | null }} Player */
-/** @typedef {{ optionId: string, answeredAt: number }} Answer */
+/** @typedef {{ selectedOptionIds: string[], answeredAt: number }} Answer */
 /** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, playerTokenHash: string | null, presenterTokenHash: string | null, heartbeat: NodeJS.Timeout | null, backpressured: boolean, pendingStatePayload: string | null, pendingAnswerPayload: string | null, drainHandler: (() => void) | null }} Client */
 /** @typedef {{ id: string, email: string, name: string, passwordHash: string, googleSub?: string | null }} Presenter */
 /** @typedef {{ id: string, presenterId: string, title: string, snapshot: { title: string, questions: Question[] }, createdAt: string, updatedAt: string, version: number }} Presentation */
-/** @typedef {{ pin: string, title: string, presenterId: string, questions: Question[], phase: Phase, currentQuestionIndex: number, players: Map<string, Player>, answers: Map<string, Answer>, scoredQuestionIndexes: Set<number>, openedAt: number | null, clients: Map<string, Client>, endedReason: string | null, endedAt: number | null, createdAt: number, version: number }} Session */
+/** @typedef {{ pin: string, title: string, presenterId: string, questions: Question[], phase: Phase, currentQuestionIndex: number, players: Map<string, Player>, answers: Map<string, Answer>, scoredQuestionIndexes: Set<number>, openedAt: number | null, effectiveDurationMs: number | null, clients: Map<string, Client>, endedReason: string | null, endedAt: number | null, createdAt: number, version: number }} Session */
 
 const staticRoutes = new Map([
   ["/", { path: new URL("./public/index.html", import.meta.url), type: "text/html; charset=utf-8" }],
@@ -333,7 +334,9 @@ async function handleSessionEventNotification(notification) {
     if (!Number.isSafeInteger(event.version)
       || !Number.isSafeInteger(event.questionIndex)
       || !isStrictStableId(event.playerId)
-      || !isStrictStableId(event.optionId)
+      || !Array.isArray(event.selectedOptionIds)
+      || event.selectedOptionIds.length === 0
+      || event.selectedOptionIds.some((id) => !isStrictStableId(id))
       || !Number.isFinite(event.answeredAt)) {
       return;
     }
@@ -667,6 +670,9 @@ async function handleCreateMedia(request, response) {
     const declaredMimeType = normalizeMimeTypeHeader(request.headers["content-type"]);
     const data = await readRawBody(request, MAX_MEDIA_BYTES);
     const detectedMimeType = detectMediaMimeType(data);
+    if (!detectedMimeType?.startsWith("image/")) {
+      throw new HttpError(415, "Question media must be a supported image.");
+    }
     if (!detectedMimeType || detectedMimeType !== declaredMimeType) {
       throw new HttpError(415, "Media type does not match the file contents.", "MEDIA_SIGNATURE_MISMATCH");
     }
@@ -788,6 +794,7 @@ async function handleCreateSession(request, response) {
     answers: new Map(),
     scoredQuestionIndexes: new Set(),
     openedAt: null,
+    effectiveDurationMs: null,
     clients: new Map(),
     endedReason: null,
     endedAt: null,
@@ -968,10 +975,23 @@ async function handleResume(body, playerTokenHash, session) {
   });
 }
 
+function normalizeSubmittedOptionIds(body, question) {
+  const source = Array.isArray(body.selectedOptionIds)
+    ? body.selectedOptionIds
+    : typeof body.optionId === "string" ? [body.optionId] : [];
+  const selectedOptionIds = source.map((id, index) => readString(id, `Selected option ${index + 1}`));
+  const uniqueIds = [...new Set(selectedOptionIds)];
+  const validIds = new Set(question?.options?.map((option) => option.id) ?? []);
+  const requiredCount = question?.correctOptionIds?.length ?? 1;
+  if (uniqueIds.length !== requiredCount || uniqueIds.length !== selectedOptionIds.length || uniqueIds.some((id) => !validIds.has(id))) {
+    throw new HttpError(400, `Select exactly ${requiredCount} answer${requiredCount === 1 ? "" : "s"}.`, "INVALID_SELECTION");
+  }
+  return uniqueIds;
+}
+
 async function handleAnswer(body, playerTokenHash, session) {
   const player = requireSessionPlayerByTokenHash(playerTokenHash, session);
   const playerId = player.id;
-  const optionId = readString(body.optionId, "Option ID");
   const question = getCurrentQuestion(session);
 
   if (session.phase !== "answering" && session.phase !== "question") {
@@ -982,9 +1002,7 @@ async function handleAnswer(body, playerTokenHash, session) {
     throw new HttpError(409, "This slide does not accept answers.");
   }
 
-  if (!question.options.some((option) => option.id === optionId)) {
-    throw new HttpError(400, "Selected option does not exist.");
-  }
+  const selectedOptionIds = normalizeSubmittedOptionIds(body, question);
 
   const phaseChanged = session.phase === "question";
   if (phaseChanged) {
@@ -993,7 +1011,7 @@ async function handleAnswer(body, playerTokenHash, session) {
     scheduleQuestionTimer(session);
   }
 
-  const result = recordAnswer(session, { playerId, optionId, now: Date.now() });
+  const result = recordAnswer(session, { playerId, selectedOptionIds, now: Date.now() });
   applySessionState(session, result.session);
 
   if (result.outcome.duplicate) {
@@ -1022,7 +1040,6 @@ async function handleAnswer(body, playerTokenHash, session) {
 }
 
 async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
-  const optionId = readString(body.optionId, "Option ID");
   const client = await database.connect();
   let transactionFinished = false;
   try {
@@ -1047,9 +1064,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
     if (snapshot.phase !== "answering" || !question || question.kind === "slide") {
       throw new HttpError(409, "Answers are not open.");
     }
-    if (!question.options.some((option) => option.id === optionId)) {
-      throw new HttpError(400, "Selected option does not exist.");
-    }
+    const selectedOptionIds = normalizeSubmittedOptionIds(body, question);
     const now = Date.now();
     const validation = recordAnswer({
       questions: snapshot.questions,
@@ -1057,7 +1072,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
       phase: snapshot.phase,
       openedAt: snapshot.openedAt,
       answers: new Map()
-    }, { playerId: "validation", optionId, now });
+    }, { playerId: "validation", selectedOptionIds, now });
     if (!validation.outcome.accepted) {
       throw new HttpError(409, "Answers are closed for this question.", "ANSWER_CLOSED");
     }
@@ -1072,22 +1087,22 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
       throw new HttpError(401, "Player resume authentication is not valid.", "PLAYER_AUTHENTICATION_INVALID");
     }
     const inserted = await client.query(
-      `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, answered_at)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, selected_option_ids, answered_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)
        ON CONFLICT (pin, question_index, player_id) DO NOTHING
-       RETURNING option_id, answered_at`,
-      [pin, questionIndex, playerId, optionId, now]
+       RETURNING option_id, selected_option_ids, answered_at`,
+      [pin, questionIndex, playerId, selectedOptionIds[0], JSON.stringify(selectedOptionIds), now]
     );
-    let selectedOptionId = optionId;
+    let persistedSelectedOptionIds = selectedOptionIds;
     let answeredAt = now;
     const accepted = inserted.rowCount > 0;
     if (!accepted) {
       const existing = await client.query(
-        `SELECT option_id, answered_at FROM live_session_answers
+        `SELECT option_id, selected_option_ids, answered_at FROM live_session_answers
          WHERE pin = $1 AND question_index = $2 AND player_id = $3`,
         [pin, questionIndex, playerId]
       );
-      selectedOptionId = existing.rows[0]?.option_id ?? optionId;
+      persistedSelectedOptionIds = normalizePersistedSelectedOptionIds(existing.rows[0] ?? { option_id: selectedOptionIds[0] });
       answeredAt = Number(existing.rows[0]?.answered_at ?? now);
     } else {
       await client.query("SELECT pg_notify($1, $2)", [
@@ -1099,7 +1114,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
           version: Number(record.version),
           questionIndex,
           playerId,
-          optionId,
+          selectedOptionIds,
           answeredAt
         })
       ]);
@@ -1113,7 +1128,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
           version: Number(record.version),
           questionIndex,
           playerId,
-          optionId,
+          selectedOptionIds,
           answeredAt
         });
       } catch (error) {
@@ -1125,7 +1140,8 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
       payload: {
         accepted,
         duplicate: !accepted,
-        selectedOptionId,
+        selectedOptionIds: persistedSelectedOptionIds,
+        selectedOptionId: persistedSelectedOptionIds[0] ?? null,
         version: Number(record.version)
       }
     };
@@ -1147,7 +1163,7 @@ function applyCompactAnswerUpdate(event) {
     || session.answers.has(event.playerId)) {
     return;
   }
-  session.answers.set(event.playerId, { optionId: event.optionId, answeredAt: event.answeredAt });
+  session.answers.set(event.playerId, { selectedOptionIds: event.selectedOptionIds, answeredAt: event.answeredAt });
   for (const client of [...session.clients.values()]) {
     if (client.role === "host") {
       writeSessionEvent(session, client, `event: answer\ndata: ${JSON.stringify({
@@ -1159,7 +1175,8 @@ function applyCompactAnswerUpdate(event) {
       writeSessionEvent(session, client, `event: answer\ndata: ${JSON.stringify({
           pin: session.pin,
           version: session.version,
-          selectedOptionId: event.optionId
+          selectedOptionIds: event.selectedOptionIds,
+          selectedOptionId: event.selectedOptionIds[0] ?? null
       })}\n\n`, { kind: "answer" });
     }
   }
@@ -1228,7 +1245,7 @@ function openAnswers(session) {
   scheduleQuestionTimer(session);
 }
 
-function revealAnswers(session, reason = "manual") {
+function revealAnswers(session, reason = "manual", now = Date.now()) {
   const question = getCurrentQuestion(session);
 
   if (session.phase !== "answering" && session.phase !== "question") {
@@ -1240,6 +1257,9 @@ function revealAnswers(session, reason = "manual") {
   }
 
   clearQuestionTimer(session);
+  session.effectiveDurationMs = reason === "timer"
+    ? question.timerSeconds * 1_000
+    : Math.max(1, now - Number(session.openedAt ?? now));
   scoreCurrentQuestion(session, question);
   session.phase = "results";
 }
@@ -1248,7 +1268,17 @@ function advanceSession(session) {
   const question = getCurrentQuestion(session);
   const isSlideReadyForNext = session.phase === "question" && question?.kind === "slide";
 
-  if (session.phase !== "results" && !isSlideReadyForNext) {
+  if (session.phase === "results") {
+    const nextIndex = session.currentQuestionIndex + 1;
+    if (nextIndex >= session.questions.length) {
+      endSession(session);
+      return;
+    }
+    session.phase = "leaderboard";
+    return;
+  }
+
+  if (session.phase !== "leaderboard" && !isSlideReadyForNext) {
     throw new HttpError(409, "Reveal results before moving on.");
   }
 
@@ -1293,6 +1323,7 @@ function resetCurrentAnswers(session) {
   clearQuestionTimer(session);
   session.answers = new Map();
   session.openedAt = null;
+  session.effectiveDurationMs = null;
 }
 
 function scheduleQuestionTimer(session) {
@@ -1862,7 +1893,18 @@ function getStateForRole(session, role, playerId) {
   const question = getCurrentQuestion(session);
   const player = playerId ? session.players.get(playerId) : null;
   const activePlayers = [...session.players.values()].filter(isActivePlayer);
-  const showAnswers = role === "host" || session.phase === "results" || session.phase === "ended";
+  const showAnswers = role === "host" || session.phase === "results" || session.phase === "leaderboard" || session.phase === "ended";
+  const playerAnswer = playerId ? session.answers.get(playerId) : null;
+  const award = showAnswers && playerAnswer && question && question.kind !== "slide"
+    ? calculateQuestionAward({
+        questionPoints: question.points,
+        openedAt: session.openedAt,
+        submittedAt: playerAnswer.answeredAt,
+        effectiveDurationMs: session.effectiveDurationMs ?? question.timerSeconds * 1_000,
+        selectedOptionIds: playerAnswer.selectedOptionIds,
+        correctOptionIds: question.correctOptionIds
+      })
+    : null;
 
   return {
     pin: session.pin,
@@ -1874,12 +1916,17 @@ function getStateForRole(session, role, playerId) {
     playerCount: activePlayers.length,
     answerCount: session.answers.size,
     openedAt: session.openedAt,
+    effectiveDurationMs: session.effectiveDurationMs,
     currentQuestion: question ? serializeQuestion(question, showAnswers, session.pin) : null,
     answerCounts: showAnswers && question ? buildAnswerCounts(session, question) : {},
     leaderboard: buildLeaderboard(session),
     recentPlayers: role === "host" ? buildRecentPlayers(session) : [],
     me: player ? { id: player.id, nickname: player.nickname, score: player.score } : null,
-    selectedOptionId: playerId ? session.answers.get(playerId)?.optionId ?? null : null,
+    selectedOptionIds: playerAnswer?.selectedOptionIds ?? [],
+    selectedOptionId: playerAnswer?.selectedOptionIds?.[0] ?? null,
+    requiredSelectionCount: question?.correctOptionIds?.length ?? 0,
+    answerOutcome: showAnswers && playerId ? award?.outcome ?? "timeout" : null,
+    awardedPoints: award?.awardedPoints ?? 0,
     endedReason: session.endedReason,
     endedAt: session.endedAt,
     mediaLimitBytes: MAX_MEDIA_BYTES
@@ -1898,7 +1945,7 @@ function serializeQuestion(question, showAnswers, pin) {
       url: `${question.media.url.split("?", 1)[0]}?pin=${encodeURIComponent(pin)}`
     } : null,
     options: question.options,
-    correctOptionId: showAnswers ? question.correctOptionId : null
+    correctOptionIds: showAnswers ? question.correctOptionIds : []
   };
 }
 
@@ -1906,8 +1953,10 @@ function buildAnswerCounts(session, question) {
   const counts = Object.fromEntries(question.options.map((option) => [option.id, 0]));
 
   for (const answer of session.answers.values()) {
-    if (Object.hasOwn(counts, answer.optionId)) {
-      counts[answer.optionId] += 1;
+    for (const optionId of answer.selectedOptionIds ?? []) {
+      if (Object.hasOwn(counts, optionId)) {
+        counts[optionId] += 1;
+      }
     }
   }
 
@@ -2116,7 +2165,7 @@ function normalizePresentationQuestion(input, index) {
       points: 0,
       timerSeconds: 0,
       options: [],
-      correctOptionId: null,
+      correctOptionIds: [],
       media
     };
   }
@@ -2124,14 +2173,10 @@ function normalizePresentationQuestion(input, index) {
   const options = normalizePresentationOptions(input.options);
   const points = normalizePoints(input.points);
   const timerSeconds = normalizeTimerSeconds(input.timerSeconds);
-  const correctOptionId = readString(input.correctOptionId, `Item ${index + 1} correct option`);
+  const correctOptionIds = normalizeCorrectOptionIds(input, options, kind, `Item ${index + 1}`);
 
   if (kind === "true_false" && options.length !== 2) {
     throw new HttpError(400, `Item ${index + 1} true or false questions need exactly 2 options.`);
-  }
-
-  if (!options.some((option) => option.id === correctOptionId)) {
-    throw new HttpError(400, `Item ${index + 1} needs a valid correct option.`);
   }
 
   return {
@@ -2141,7 +2186,7 @@ function normalizePresentationQuestion(input, index) {
     points,
     timerSeconds,
     options,
-    correctOptionId,
+    correctOptionIds,
     media
   };
 }
@@ -2165,6 +2210,22 @@ function normalizePresentationOptions(input) {
   });
 }
 
+function normalizeCorrectOptionIds(input, options, kind, itemLabel) {
+  const candidateIds = Array.isArray(input.correctOptionIds)
+    ? input.correctOptionIds
+    : typeof input.correctOptionId === "string" ? [input.correctOptionId] : [];
+  const correctOptionIds = candidateIds.map((id, index) => readString(id, `${itemLabel} correct option ${index + 1}`));
+  const uniqueIds = [...new Set(correctOptionIds)];
+  const validIds = new Set(options.map((option) => option.id));
+  if (uniqueIds.length === 0 || uniqueIds.length !== correctOptionIds.length || uniqueIds.some((id) => !validIds.has(id))) {
+    throw new HttpError(400, `${itemLabel} needs unique valid correct options.`);
+  }
+  if (kind === "true_false" && uniqueIds.length !== 1) {
+    throw new HttpError(400, `${itemLabel} true or false questions need exactly 1 correct option.`);
+  }
+  return uniqueIds;
+}
+
 function normalizeQuestion(input, index) {
   if (!input || typeof input !== "object") {
     throw new HttpError(400, `Item ${index + 1} is required.`);
@@ -2182,7 +2243,7 @@ function normalizeQuestion(input, index) {
       points: 0,
       timerSeconds: 0,
       options: [],
-      correctOptionId: null,
+      correctOptionIds: [],
       media
     };
   }
@@ -2190,14 +2251,10 @@ function normalizeQuestion(input, index) {
   const options = normalizeOptions(input.options);
   const points = normalizePoints(input.points);
   const timerSeconds = normalizeTimerSeconds(input.timerSeconds);
-  const correctOptionId = readString(input.correctOptionId, `Item ${index + 1} correct option`);
+  const correctOptionIds = normalizeCorrectOptionIds(input, options, kind, `Item ${index + 1}`);
 
   if (kind === "true_false" && options.length !== 2) {
     throw new HttpError(400, `Item ${index + 1} true or false questions need exactly 2 options.`);
-  }
-
-  if (!options.some((option) => option.id === correctOptionId)) {
-    throw new HttpError(400, `Item ${index + 1} needs a valid correct option.`);
   }
 
   return {
@@ -2207,7 +2264,7 @@ function normalizeQuestion(input, index) {
     points,
     timerSeconds,
     options,
-    correctOptionId,
+    correctOptionIds,
     media
   };
 }
@@ -2775,10 +2832,15 @@ async function initializeDatabase() {
       question_index INTEGER NOT NULL,
       player_id UUID NOT NULL,
       option_id TEXT NOT NULL,
+      selected_option_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
       answered_at BIGINT NOT NULL,
       PRIMARY KEY (pin, question_index, player_id)
     )
   `);
+  await database.query("ALTER TABLE live_session_answers ADD COLUMN IF NOT EXISTS selected_option_ids JSONB NOT NULL DEFAULT '[]'::jsonb");
+  await database.query(`UPDATE live_session_answers
+    SET selected_option_ids = jsonb_build_array(option_id)
+    WHERE jsonb_array_length(selected_option_ids) = 0`);
   await database.query("CREATE INDEX IF NOT EXISTS live_session_answers_pin_question_idx ON live_session_answers (pin, question_index)");
   await migrateLegacyLiveSessionState();
   await database.query(`
@@ -3240,7 +3302,7 @@ function createBlankPresentationSnapshot() {
         points: 1000,
         timerSeconds: DEFAULT_TIMER_SECONDS,
         options,
-        correctOptionId: options[0].id,
+        correctOptionIds: [options[0].id],
         media: null
       }
     ]
@@ -3564,13 +3626,23 @@ async function persistAnswer(session, playerId, answer) {
     return true;
   }
   const result = await getSessionQueryable().query(
-    `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, answered_at)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, selected_option_ids, answered_at)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6)
      ON CONFLICT (pin, question_index, player_id) DO NOTHING
      RETURNING player_id`,
-    [session.pin, session.currentQuestionIndex, playerId, answer.optionId, answer.answeredAt]
+    [session.pin, session.currentQuestionIndex, playerId, answer.selectedOptionIds[0], JSON.stringify(answer.selectedOptionIds), answer.answeredAt]
   );
   return result.rowCount > 0;
+}
+
+function normalizePersistedSelectedOptionIds(answer) {
+  if (Array.isArray(answer?.selected_option_ids) && answer.selected_option_ids.length > 0) {
+    return answer.selected_option_ids.filter((id) => typeof id === "string");
+  }
+  if (Array.isArray(answer?.selectedOptionIds) && answer.selectedOptionIds.length > 0) {
+    return answer.selectedOptionIds.filter((id) => typeof id === "string");
+  }
+  return typeof answer?.option_id === "string" ? [answer.option_id] : [];
 }
 
 async function getPersistedAnswer(pin, questionIndex, playerId) {
@@ -3578,13 +3650,13 @@ async function getPersistedAnswer(pin, questionIndex, playerId) {
     return null;
   }
   const result = await getSessionQueryable().query(
-    `SELECT option_id, answered_at
+    `SELECT option_id, selected_option_ids, answered_at
      FROM live_session_answers
      WHERE pin = $1 AND question_index = $2 AND player_id = $3`,
     [pin, questionIndex, playerId]
   );
   return result.rows[0] ? {
-    optionId: result.rows[0].option_id,
+    selectedOptionIds: normalizePersistedSelectedOptionIds(result.rows[0]),
     answeredAt: Number(result.rows[0].answered_at)
   } : null;
 }
@@ -3623,14 +3695,15 @@ async function migrateLegacyLiveSessionState() {
         });
       }
       for (const [playerId, answer] of Array.isArray(snapshot.answers) ? snapshot.answers : []) {
-        if (!isStrictStableId(playerId) || !isSafeLegacyStableId(answer?.optionId)) {
+        const selectedOptionIds = normalizePersistedSelectedOptionIds(answer).filter(isSafeLegacyStableId);
+        if (!isStrictStableId(playerId) || selectedOptionIds.length === 0) {
           continue;
         }
         await client.query(
-          `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, answered_at)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, selected_option_ids, answered_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6)
            ON CONFLICT (pin, question_index, player_id) DO NOTHING`,
-          [record.pin, Number(snapshot.currentQuestionIndex ?? -1), playerId, answer.optionId, Number(answer.answeredAt ?? Date.now())]
+          [record.pin, Number(snapshot.currentQuestionIndex ?? -1), playerId, selectedOptionIds[0], JSON.stringify(selectedOptionIds), Number(answer.answeredAt ?? Date.now())]
         );
       }
       if (normalizedIds.changed || hasEmbeddedState) {
@@ -3679,12 +3752,19 @@ function normalizeLegacySnapshotIds(sourceSnapshot) {
         optionMap.set(oldId, option.id);
       }
     }
-    if (typeof question.correctOptionId === "string" && optionMap.has(question.correctOptionId)) {
-      const nextCorrectOptionId = optionMap.get(question.correctOptionId);
-      if (nextCorrectOptionId !== question.correctOptionId) {
-        question.correctOptionId = nextCorrectOptionId;
-        changed = true;
-      }
+    const sourceCorrectOptionIds = Array.isArray(question.correctOptionIds)
+      ? question.correctOptionIds
+      : typeof question.correctOptionId === "string" ? [question.correctOptionId] : [];
+    const normalizedCorrectOptionIds = sourceCorrectOptionIds
+      .map((optionId) => optionMap.get(optionId) ?? optionId)
+      .filter((optionId) => optionIds.has(optionId));
+    if (JSON.stringify(question.correctOptionIds ?? []) !== JSON.stringify(normalizedCorrectOptionIds)) {
+      question.correctOptionIds = normalizedCorrectOptionIds;
+      changed = true;
+    }
+    if (Object.hasOwn(question, "correctOptionId")) {
+      delete question.correctOptionId;
+      changed = true;
     }
     optionMaps.push(optionMap);
   }
@@ -3693,12 +3773,17 @@ function normalizeLegacySnapshotIds(sourceSnapshot) {
   if (Array.isArray(snapshot.answers)) {
     for (const entry of snapshot.answers) {
       const answer = entry?.[1];
-      if (typeof answer?.optionId === "string" && currentOptionMap.has(answer.optionId)) {
-        const nextOptionId = currentOptionMap.get(answer.optionId);
-        if (nextOptionId !== answer.optionId) {
-          answer.optionId = nextOptionId;
-          changed = true;
-        }
+      if (!answer || typeof answer !== "object") continue;
+      const sourceSelectedOptionIds = normalizePersistedSelectedOptionIds(answer);
+      const normalizedSelectedOptionIds = sourceSelectedOptionIds.map((optionId) => currentOptionMap.get(optionId) ?? optionId);
+      if (JSON.stringify(answer.selectedOptionIds ?? []) !== JSON.stringify(normalizedSelectedOptionIds)) {
+        answer.selectedOptionIds = normalizedSelectedOptionIds;
+        changed = true;
+      }
+      const normalizedPrimaryOptionId = normalizedSelectedOptionIds[0];
+      if (normalizedPrimaryOptionId && answer.optionId !== normalizedPrimaryOptionId) {
+        answer.optionId = normalizedPrimaryOptionId;
+        changed = true;
       }
     }
   }
@@ -3770,7 +3855,7 @@ async function loadPersistedSession(pin, options = {}) {
     [pin]
   );
   const answersResult = await queryable.query(
-    `SELECT player_id, option_id, answered_at
+    `SELECT player_id, option_id, selected_option_ids, answered_at
      FROM live_session_answers
      WHERE pin = $1 AND question_index = $2`,
     [pin, Number(result.rows[0].snapshot?.currentQuestionIndex ?? -1)]
@@ -3813,6 +3898,7 @@ function serializeSessionSnapshot(session) {
     currentQuestionIndex: session.currentQuestionIndex,
     scoredQuestionIndexes: [...session.scoredQuestionIndexes],
     openedAt: session.openedAt,
+    effectiveDurationMs: session.effectiveDurationMs,
     endedReason: session.endedReason,
     endedAt: session.endedAt,
     createdAt: session.createdAt
@@ -3843,10 +3929,11 @@ function hydrateSessionSnapshot(snapshot, clients, version = 0, playerRows = [],
   const legacyAnswers = (snapshot.answers ?? []).map(([playerId, answer]) => ({
     player_id: playerId,
     option_id: answer?.optionId,
+    selected_option_ids: answer?.selectedOptionIds,
     answered_at: answer?.answeredAt
   }));
   const answers = new Map((answerRows.length > 0 ? answerRows : legacyAnswers).map((answer) => [answer.player_id, {
-    optionId: answer.option_id,
+    selectedOptionIds: normalizePersistedSelectedOptionIds(answer),
     answeredAt: Number(answer.answered_at ?? Date.now())
   }]));
   return {
@@ -3860,6 +3947,7 @@ function hydrateSessionSnapshot(snapshot, clients, version = 0, playerRows = [],
     answers,
     scoredQuestionIndexes: new Set(snapshot.scoredQuestionIndexes ?? []),
     openedAt: snapshot.openedAt ?? null,
+    effectiveDurationMs: Number.isFinite(snapshot.effectiveDurationMs) ? Number(snapshot.effectiveDurationMs) : null,
     clients,
     endedReason: snapshot.endedReason ?? null,
     endedAt: snapshot.endedAt ?? null,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  calculateQuestionAward,
   DomainError,
   endSession,
   recordAnswer,
@@ -16,6 +17,7 @@ const QUESTION_POINTS = 100;
 const PLAYER_ONE_ID = "player-one";
 const PLAYER_TWO_ID = "player-two";
 const CORRECT_OPTION_ID = "option-correct";
+const SECOND_CORRECT_OPTION_ID = "option-second-correct";
 const INCORRECT_OPTION_ID = "option-incorrect";
 
 function createSession(overrides = {}) {
@@ -25,9 +27,10 @@ function createSession(overrides = {}) {
     text: "Which option is correct?",
     points: QUESTION_POINTS,
     timerSeconds: QUESTION_DURATION_SECONDS,
-    correctOptionId: CORRECT_OPTION_ID,
+    correctOptionIds: [CORRECT_OPTION_ID],
     options: [
       { id: CORRECT_OPTION_ID, text: "Correct" },
+      { id: SECOND_CORRECT_OPTION_ID, text: "Also correct" },
       { id: INCORRECT_OPTION_ID, text: "Incorrect" }
     ]
   };
@@ -52,7 +55,7 @@ test("recordAnswer rejects an answer at the authoritative deadline", () => {
   const session = createSession({ openedAt: NOW - QUESTION_DURATION_MS });
 
   assert.throws(
-    () => recordAnswer(session, { playerId: PLAYER_ONE_ID, optionId: CORRECT_OPTION_ID, now: NOW }),
+    () => recordAnswer(session, { playerId: PLAYER_ONE_ID, selectedOptionIds: [CORRECT_OPTION_ID], now: NOW }),
     (error) => {
       assert.ok(error instanceof DomainError);
       assert.equal(error.status, 409);
@@ -69,14 +72,14 @@ test("recordAnswer records the first answer without mutating the source session"
 
   const result = recordAnswer(session, {
     playerId: PLAYER_ONE_ID,
-    optionId: CORRECT_OPTION_ID,
+    selectedOptionIds: [CORRECT_OPTION_ID],
     now: NOW
   });
 
   assert.notStrictEqual(result.session, session);
   assert.equal(session.answers.size, 0);
   assert.deepEqual(result.session.answers.get(PLAYER_ONE_ID), {
-    optionId: CORRECT_OPTION_ID,
+    selectedOptionIds: [CORRECT_OPTION_ID],
     answeredAt: NOW
   });
   assert.deepEqual(result.outcome, { accepted: true, duplicate: false });
@@ -85,19 +88,19 @@ test("recordAnswer records the first answer without mutating the source session"
 test("recordAnswer returns an explicit duplicate outcome and preserves the first answer", () => {
   const first = recordAnswer(createSession(), {
     playerId: PLAYER_ONE_ID,
-    optionId: CORRECT_OPTION_ID,
+    selectedOptionIds: [CORRECT_OPTION_ID],
     now: NOW - 100
   });
 
   const duplicate = recordAnswer(first.session, {
     playerId: PLAYER_ONE_ID,
-    optionId: INCORRECT_OPTION_ID,
+    selectedOptionIds: [INCORRECT_OPTION_ID],
     now: NOW
   });
 
   assert.strictEqual(duplicate.session, first.session);
   assert.deepEqual(duplicate.session.answers.get(PLAYER_ONE_ID), {
-    optionId: CORRECT_OPTION_ID,
+    selectedOptionIds: [CORRECT_OPTION_ID],
     answeredAt: NOW - 100
   });
   assert.deepEqual(duplicate.outcome, { accepted: false, duplicate: true });
@@ -120,7 +123,7 @@ test("endSession rejects ending an active round without explicit discard confirm
 
 test("endSession ends an active round only after discard is confirmed", () => {
   const answers = new Map([
-    [PLAYER_ONE_ID, { optionId: CORRECT_OPTION_ID, answeredAt: NOW - 100 }]
+    [PLAYER_ONE_ID, { selectedOptionIds: [CORRECT_OPTION_ID], answeredAt: NOW - 100 }]
   ]);
   const session = createSession({ answers });
 
@@ -137,7 +140,7 @@ test("endSession ends an active round only after discard is confirmed", () => {
 
 test("setPlayerPresence marks a player offline without deleting durable game state", () => {
   const answers = new Map([
-    [PLAYER_ONE_ID, { optionId: CORRECT_OPTION_ID, answeredAt: NOW - 100 }]
+    [PLAYER_ONE_ID, { selectedOptionIds: [CORRECT_OPTION_ID], answeredAt: NOW - 100 }]
   ]);
   const session = createSession({ answers });
 
@@ -159,18 +162,49 @@ test("setPlayerPresence marks a player offline without deleting durable game sta
 
 test("scoreCurrentQuestion awards points exactly once", () => {
   const answers = new Map([
-    [PLAYER_ONE_ID, { optionId: CORRECT_OPTION_ID, answeredAt: NOW - 100 }],
-    [PLAYER_TWO_ID, { optionId: INCORRECT_OPTION_ID, answeredAt: NOW - 100 }]
+    [PLAYER_ONE_ID, { selectedOptionIds: [CORRECT_OPTION_ID], answeredAt: NOW - 100 }],
+    [PLAYER_TWO_ID, { selectedOptionIds: [INCORRECT_OPTION_ID], answeredAt: NOW - 100 }]
   ]);
-  const session = createSession({ answers });
+  const session = createSession({ answers, effectiveDurationMs: QUESTION_DURATION_MS });
 
   const scored = scoreCurrentQuestion(session);
   const scoredAgain = scoreCurrentQuestion(scored);
 
   assert.equal(session.players.get(PLAYER_ONE_ID).score, 250);
-  assert.equal(scored.players.get(PLAYER_ONE_ID).score, 350);
+  assert.equal(scored.players.get(PLAYER_ONE_ID).score, 347);
   assert.equal(scored.players.get(PLAYER_TWO_ID).score, 75);
   assert.ok(scored.scoredQuestionIndexes.has(0));
   assert.strictEqual(scoredAgain, scored);
-  assert.equal(scoredAgain.players.get(PLAYER_ONE_ID).score, 350);
+  assert.equal(scoredAgain.players.get(PLAYER_ONE_ID).score, 347);
+});
+
+test("calculateQuestionAward decreases continuously to zero at the effective deadline", () => {
+  assert.deepEqual(calculateQuestionAward({
+    questionPoints: 1_000,
+    openedAt: NOW,
+    submittedAt: NOW + 15_000,
+    effectiveDurationMs: 30_000,
+    selectedOptionIds: [CORRECT_OPTION_ID],
+    correctOptionIds: [CORRECT_OPTION_ID]
+  }), { timeValue: 500, awardedPoints: 500, correctlySelected: 1, outcome: "correct" });
+
+  assert.equal(calculateQuestionAward({
+    questionPoints: 1_000,
+    openedAt: NOW,
+    submittedAt: NOW + 30_000,
+    effectiveDurationMs: 30_000,
+    selectedOptionIds: [CORRECT_OPTION_ID],
+    correctOptionIds: [CORRECT_OPTION_ID]
+  }).awardedPoints, 0);
+});
+
+test("calculateQuestionAward gives partial credit without rewarding wrong selections", () => {
+  assert.deepEqual(calculateQuestionAward({
+    questionPoints: 1_000,
+    openedAt: NOW,
+    submittedAt: NOW + 2_000,
+    effectiveDurationMs: 10_000,
+    selectedOptionIds: [CORRECT_OPTION_ID, INCORRECT_OPTION_ID],
+    correctOptionIds: [CORRECT_OPTION_ID, SECOND_CORRECT_OPTION_ID]
+  }), { timeValue: 800, awardedPoints: 400, correctlySelected: 1, outcome: "partial" });
 });

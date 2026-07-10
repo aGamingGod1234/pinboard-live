@@ -267,6 +267,78 @@ test("presentation saves reject a stale revision", async () => {
   assert.equal((await staleSave.json()).code, "PRESENTATION_VERSION_CONFLICT");
 });
 
+test("presentation saves normalize multiple and legacy correct option fields", async () => {
+  const presenter = await loginPresenter();
+  const createResponse = await postJson("/api/presentations", {}, presenterMutationHeaders(presenter));
+  const created = (await createResponse.json()).presentation;
+  const optionIds = [randomUUID(), randomUUID(), randomUUID()];
+  const question = {
+    id: randomUUID(),
+    kind: "quiz",
+    text: "Choose two",
+    points: 1_000,
+    timerSeconds: 30,
+    options: optionIds.map((id, index) => ({ id, text: `Option ${index + 1}` })),
+    correctOptionIds: optionIds.slice(0, 2),
+    media: null
+  };
+
+  const multiSave = await putJson(`/api/presentations/${created.id}`, {
+    snapshot: { title: "Multiple correct", questions: [question] },
+    expectedVersion: created.version
+  }, presenterMutationHeaders(presenter));
+  assert.equal(multiSave.status, 200);
+  const multiSaved = (await multiSave.json()).presentation;
+  assert.deepEqual(multiSaved.snapshot.questions[0].correctOptionIds, optionIds.slice(0, 2));
+
+  const legacySave = await putJson(`/api/presentations/${created.id}`, {
+    snapshot: {
+      title: "Legacy correct",
+      questions: [{ ...question, correctOptionIds: undefined, correctOptionId: optionIds[0] }]
+    },
+    expectedVersion: multiSaved.version
+  }, presenterMutationHeaders(presenter));
+  assert.equal(legacySave.status, 200);
+  assert.deepEqual((await legacySave.json()).presentation.snapshot.questions[0].correctOptionIds, [optionIds[0]]);
+});
+
+test("answer results advance through a dedicated leaderboard before the next question", async () => {
+  const presenter = await loginPresenter();
+  const optionIds = [randomUUID(), randomUUID()];
+  const questions = ["First question", "Second question"].map((text) => ({
+    id: randomUUID(),
+    kind: "quiz",
+    text,
+    points: 1_000,
+    timerSeconds: 30,
+    options: optionIds.map((id, index) => ({ id, text: `Option ${index + 1}` })),
+    correctOptionIds: [optionIds[0]],
+    media: null
+  }));
+  const created = await postJson("/api/sessions", { title: "Leaderboard phases", questions }, presenterMutationHeaders(presenter));
+  const { pin } = await created.json();
+  const joinResponse = await postJson(`/api/sessions/${pin}/join`, { nickname: "Phase player" }, { Origin: baseUrl });
+  const playerCookie = cookiePair(joinResponse.headers.get("set-cookie") ?? "");
+
+  await postJson(`/api/sessions/${pin}/start`, {}, presenterMutationHeaders(presenter));
+  await postJson(`/api/sessions/${pin}/open`, {}, presenterMutationHeaders(presenter));
+  await postJson(`/api/sessions/${pin}/answer`, { selectedOptionIds: [optionIds[0]] }, { Cookie: playerCookie, Origin: baseUrl });
+  const reveal = await postJson(`/api/sessions/${pin}/reveal`, {}, presenterMutationHeaders(presenter));
+  const revealed = await reveal.json();
+  assert.equal(revealed.session.phase, "results");
+  assert.ok(revealed.session.effectiveDurationMs >= 1);
+
+  const leaderboard = await postJson(`/api/sessions/${pin}/next`, {}, presenterMutationHeaders(presenter));
+  const leaderboardState = await leaderboard.json();
+  assert.equal(leaderboardState.session.phase, "leaderboard");
+  assert.equal(leaderboardState.session.currentQuestionIndex, 0);
+
+  const next = await postJson(`/api/sessions/${pin}/next`, {}, presenterMutationHeaders(presenter));
+  const nextState = await next.json();
+  assert.equal(nextState.session.phase, "answering");
+  assert.equal(nextState.session.currentQuestionIndex, 1);
+});
+
 async function loginPresenter() {
   const response = await postJson("/api/auth", {
     email: TEST_EMAIL,

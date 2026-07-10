@@ -51,6 +51,7 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
   assert.deepEqual(revisionResponses.map((response) => response.status).sort(), [200, 409]);
 
   const correctOptionId = randomUUID();
+  const secondCorrectOptionId = randomUUID();
   const incorrectOptionId = randomUUID();
   const createResponse = await postJson(firstServer.baseUrl, "/api/sessions", {
     title: "PostgreSQL concurrency",
@@ -62,9 +63,10 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
       timerSeconds: QUESTION_TIMER_SECONDS,
       options: [
         { id: correctOptionId, text: "Correct" },
+        { id: secondCorrectOptionId, text: "Also correct" },
         { id: incorrectOptionId, text: "Incorrect" }
       ],
-      correctOptionId,
+      correctOptionIds: [correctOptionId, secondCorrectOptionId],
       media: null
     }]
   }, presenterMutationHeaders(firstServer.baseUrl, presenter));
@@ -89,7 +91,7 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
   const answerRequests = [firstServer, secondServer].map((server) => postJson(
     server.baseUrl,
     `/api/sessions/${pin}/answer`,
-    { optionId: correctOptionId },
+    { selectedOptionIds: [correctOptionId, secondCorrectOptionId] },
     { Cookie: playerCookie, Origin: server.baseUrl }
   ));
   const answerResponses = await Promise.all(answerRequests);
@@ -97,7 +99,9 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
   const answers = await Promise.all(answerResponses.map((response) => response.json()));
   assert.equal(answers.filter((answer) => answer.accepted === true).length, 1);
   assert.equal(answers.filter((answer) => answer.duplicate === true).length, 1);
-  assert.ok(answers.every((answer) => answer.selectedOptionId === correctOptionId));
+  assert.ok(answers.every((answer) => (
+    JSON.stringify(answer.selectedOptionIds) === JSON.stringify([correctOptionId, secondCorrectOptionId])
+  )));
   assert.ok(answers.every((answer) => Number.isSafeInteger(answer.version)));
   const answeredVersion = Math.max(...answers.map((answer) => answer.version));
   assert.ok(answeredVersion >= started.session.version);
@@ -117,7 +121,7 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
   const burstResponses = await Promise.all(additionalPlayers.map((player) => postJson(
     player.baseUrl,
     `/api/sessions/${pin}/answer`,
-    { optionId: correctOptionId },
+    { selectedOptionIds: [correctOptionId, secondCorrectOptionId] },
     { Cookie: player.cookie, Origin: player.baseUrl }
   )));
   assert.ok(burstResponses.every((response) => response.status === 200));
@@ -156,6 +160,7 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
   assert.equal(resumed.playerId, joined.playerId);
   assert.equal(resumed.session.phase, "results");
   assert.equal(resumed.session.selectedOptionId, correctOptionId);
+  assert.deepEqual(resumed.session.selectedOptionIds, [correctOptionId, secondCorrectOptionId]);
   assert.equal(resumed.session.me.score, scoredPlayer.score);
   assert.ok(resumed.session.version >= revealed.session.version);
 });

@@ -58,9 +58,12 @@ For Google sign-in, register `PUBLIC_ORIGIN` as an authorized origin and configu
 ## Persistence and live flow
 
 - The Node.js server is authoritative for session phases, deadlines, scoring, and idempotent answer submission.
+- Regular quizzes support 2–6 options and one or more correct answers through `correctOptionIds`. True/False remains fixed at two options with exactly one correct answer. Single-answer questions submit immediately; multi-answer questions require exactly the displayed selection count and an explicit submit.
+- Player submissions are persisted as `selectedOptionIds`. Awards decrease continuously in milliseconds from the question's configured points to zero at its effective deadline. A manual Skip uses the exact elapsed duration, and multi-answer awards multiply that time value by the fraction of correct choices selected; wrong and missing answers receive zero.
+- Live rounds progress through `question -> answering -> results -> leaderboard`. Presenter results contain the answer distribution and explicit correct markers without an embedded leaderboard. Players reconnect into the authoritative selection, waiting, reveal, or leaderboard state, including correct, partial, incorrect, timeout, and awarded-point details.
 - PostgreSQL row locks serialize each PIN's mutations. Versioned snapshots, normalized player/answer rows, and score updates commit atomically, so concurrent replicas cannot accept an answer after reveal or partially persist scoring.
 - PostgreSQL `LISTEN/NOTIFY` invalidates replica caches and triggers role-scoped SSE updates. Clients reject delayed state versions, while disconnects update presence without deleting durable participant identity.
-- Media is uploaded as raw bytes into separate `media_assets` records rather than embedded base64 in snapshots. The server detects signatures, rejects MIME mismatches, enforces presenter/player authorization and quotas, and streams byte ranges from PostgreSQL with bounded concurrency.
+- Each question accepts one raster image (PNG, JPEG, GIF, or WebP). Media is uploaded as raw bytes into separate `media_assets` records rather than embedded base64 in snapshots. The server detects signatures, rejects videos, active formats, and MIME mismatches, enforces presenter/player authorization and quotas, and streams byte ranges from PostgreSQL with bounded concurrency.
 
 ## Tests
 

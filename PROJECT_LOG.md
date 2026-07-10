@@ -821,3 +821,38 @@
 ### Suggested Next Steps
 - Add any additional presenter email addresses to `GOOGLE_ALLOWED_EMAILS` before they need access.
 - Add a managed OAuth test identity if fully automated production Google sign-in checks are required in CI.
+## 2026-07-10 — Dynamic Quiz Answers, Scoring, and Results
+
+### What Was Implemented
+- Added 2–6 option editing for regular quizzes with accessible add/remove controls and nearest-option correct-answer promotion.
+- Added multiple-correct toggles for regular quizzes while keeping True/False fixed to one correct answer.
+- Added authoritative array submissions and PostgreSQL persistence through `correctOptionIds` and `selectedOptionIds`, including legacy normalization.
+- Added millisecond scoring, proportional multi-answer credit, exact elapsed-time Skip handling, and zero-point timeout/wrong outcomes.
+- Split answer results from the leaderboard and added a prominent presenter timer plus a 2–6 answer distribution graph.
+- Added player selection limits, explicit multi-answer submission, post-submit waiting copy, and correct/partial/incorrect/timeout reveal cards.
+- Restricted question media to one signature-validated raster image with immediate preview and hover/focus removal.
+- Added responsive desktop/mobile layouts and automated browser coverage for editor, reconnect, results, multi-answer, partial-credit, and timeout flows.
+
+### Files Modified
+- `src/session-domain.mjs` — array submissions, award calculation, outcomes, and idempotent scoring.
+- `server.mjs` — validation, persistence migration, effective-duration phases, role state, and image-only uploads.
+- `public/client-state.js` — immutable option/correct-selection helpers and safe live-state patch rules.
+- `public/app.js` — editor controls, presenter/player phases, image workflow, and answer submissions.
+- `public/styles.css` — responsive editor, timer, result graph, player feedback, and 2–6 option layouts.
+- `test/unit/*.test.mjs` — domain, editor-helper, timing, and state-transition coverage.
+- `test/integration/*.test.mjs` — lifecycle, persistence, concurrency, and media security coverage.
+- `tests/e2e/*.mjs` — desktop presenter/editor and mobile player end-to-end coverage.
+- `README.md` — behavior, scoring, persistence, and media documentation.
+
+### Assumptions Made (flag these for review)
+- Multiple correct answers apply only to regular quiz questions; True/False remains single-correct and slides have no answers.
+- Existing presentations contain no videos, so new and edited question media is raster-image-only.
+- A player's selection limit equals the number of configured correct answers, as approved.
+
+### Known Issues / Deferred
+- The PostgreSQL two-replica integration test requires `TEST_DATABASE_URL`; local verification may skip it when no local test database is configured. GitHub CI must run it against PostgreSQL 16 before merge.
+- Final GitHub PR, CI, Railway deployment, production logs, and live-URL evidence will be appended after publication.
+
+### Suggested Next Steps
+- Verify the PostgreSQL concurrency job and all review checks in GitHub.
+- Deploy the exact merged commit to Railway and exercise the production editor, presenter, and player flows on desktop and mobile.

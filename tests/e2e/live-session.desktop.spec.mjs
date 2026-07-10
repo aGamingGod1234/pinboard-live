@@ -10,6 +10,7 @@ import {
 const GOOGLE_BUTTON_HEIGHT = 48;
 const GOOGLE_ICON_SIZE = 18;
 const VISUALLY_HIDDEN_SIZE = 1;
+const QUESTION_IMAGE = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
 test("Google presenter button stays compact when provider inline styles are unavailable", async ({ page }) => {
   await page.goto("/presentation/login");
@@ -57,6 +58,38 @@ test("Google presenter button stays compact when provider inline styles are unav
   expect(metrics.assistiveLabelHeight).toBe(VISUALLY_HIDDEN_SIZE);
 });
 
+test("quiz editor supports two to six answers, multiple correct toggles, and one removable image", async ({ page }) => {
+  await loginPresenter(page);
+  await page.getByRole("button", { name: /new presentation/i }).click();
+
+  const firstCorrect = page.getByLabel(/^Toggle option 1 as correct:/);
+  await expect(firstCorrect).toBeChecked();
+  await page.getByRole("button", { name: "Remove option 1", exact: true }).click();
+  await expect(page.getByLabel(/^Toggle option 1 as correct:/)).toBeChecked();
+  await page.getByRole("button", { name: "Remove option 3", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Remove option/ })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /^Remove option/ }).first()).toBeDisabled();
+
+  const addAnswer = page.getByRole("button", { name: "Add answer", exact: true });
+  for (let index = 0; index < 4; index += 1) await addAnswer.click();
+  await expect(page.getByRole("button", { name: /^Remove option/ })).toHaveCount(6);
+  await expect(addAnswer).toBeDisabled();
+
+  await page.getByLabel(/^Toggle option 2 as correct:/).check();
+  await expect(page.getByText("2 correct answers", { exact: true })).toBeVisible();
+  await expect(page.getByText("Players select 2", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Question image", { exact: true }).setInputFiles({
+    name: "question.png",
+    mimeType: "image/png",
+    buffer: QUESTION_IMAGE
+  });
+  await expect(page.getByRole("img", { name: "Question image preview" })).toBeVisible();
+  await expect(page.getByLabel("Question image", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Remove question image", exact: true }).click();
+  await expect(page.getByLabel("Question image", { exact: true })).toBeAttached();
+});
+
 test("presenter creates a quiz and completes a resumable two-context live session", async ({ browser, page }) => {
   let presenterErrors;
   const playerContext = await browser.newContext({ baseURL: BASE_URL });
@@ -88,7 +121,12 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     await expect(questionText).toBeVisible();
     await questionText.fill("Which answer is first?");
     await page.getByLabel("Option 1 text", { exact: true }).fill("First choice");
-    await expect(page.getByLabel("Mark option 1 as correct: First choice", { exact: true })).toBeVisible();
+    await expect(page.getByLabel(/^Toggle option 1 as correct:/)).toBeVisible();
+    await page.getByLabel("Question image", { exact: true }).setInputFiles({
+      name: "question.png",
+      mimeType: "image/png",
+      buffer: QUESTION_IMAGE
+    });
     await page.getByRole("button", { name: "Add item", exact: true }).click();
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText(/^Saved (?!draft$).+/)).toBeVisible();
@@ -107,6 +145,14 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
 
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.locator(".answer-progress").first()).toHaveAttribute("aria-label", "0 of 0 answers");
+    const presenterImage = page.locator(".presenter-media-display .media-preview");
+    await expect(presenterImage).toBeVisible();
+    const imageOffset = await presenterImage.evaluate((image) => {
+      const imageRect = image.getBoundingClientRect();
+      const frameRect = image.parentElement.getBoundingClientRect();
+      return Math.abs((imageRect.left + imageRect.width / 2) - (frameRect.left + frameRect.width / 2));
+    });
+    expect(imageOffset).toBeLessThanOrEqual(1);
 
     const firstAnswer = playerPage.getByRole("button", {
       name: "Option 1, red triangle: First choice",
@@ -114,23 +160,23 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     });
     await expect(firstAnswer).toBeEnabled();
     await firstAnswer.click();
-    await expect(firstAnswer).toHaveAttribute("aria-pressed", "true");
+    await expect(playerPage.getByRole("heading", { name: "Lightning fast", exact: true })).toBeVisible();
 
     await playerPage.reload();
-    const resumedAnswer = playerPage.getByRole("button", {
-      name: "Option 1, red triangle: First choice",
-      exact: true
-    });
-    await expect(resumedAnswer).toHaveAttribute("aria-pressed", "true");
-    await expect(playerPage.getByText("Reloading player", { exact: true })).toBeVisible();
+    await expect(playerPage.getByRole("heading", { name: "Lightning fast", exact: true })).toBeVisible();
+    await expect(playerPage.getByText("But did you get it right?", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: /^(?:Skip timer|Reveal)$/ }).click();
-    await expect(playerPage.getByRole("status")).toContainText("Correct. You earned 1000 points.");
-    await expect(playerPage.getByRole("button", {
-      name: "Option 1, red triangle: First choice. Correct answer",
-      exact: true
-    })).toBeVisible();
+    await expect(page.locator(".answer-distribution-chart")).toBeVisible();
+    await expect(page.locator(".presenter-result-media .media-preview")).toBeVisible();
+    await expect(page.locator(".answer-result-bar")).toHaveCount(4);
+    await expect(page.locator(".answer-result-bar.is-correct")).toContainText("Correct");
+    await expect(page.locator(".leaderboard")).toHaveCount(0);
+    await expect(playerPage.getByRole("heading", { name: "Correct", exact: true })).toBeVisible();
+    await expect(playerPage.locator(".points-awarded")).toContainText(/^\+[\d,]+ points$/);
     await page.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Current scores", exact: true })).toBeVisible();
+    await expect(playerPage.getByRole("heading", { name: "Current scores", exact: true })).toBeVisible();
 
     page.once("dialog", async (dialog) => dialog.accept());
     await page.getByRole("button", { name: "End", exact: true }).click();

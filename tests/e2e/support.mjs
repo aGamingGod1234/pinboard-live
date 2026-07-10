@@ -34,7 +34,11 @@ export async function loginPresenter(page) {
   await expect(page.getByRole("heading", { name: /Welcome back/i })).toBeVisible();
 }
 
-export async function createApiHostedQuiz(request, title = "Mobile verification quiz") {
+export async function createApiHostedQuiz(request, {
+  title = "Mobile verification quiz",
+  correctOptionIndexes = [0],
+  optionCount = 4
+} = {}) {
   const originHeaders = { Origin: BASE_URL };
   const authentication = await request.post("/api/auth", {
     headers: originHeaders,
@@ -47,7 +51,8 @@ export async function createApiHostedQuiz(request, title = "Mobile verification 
   const authBody = await responseJson(authentication);
   expect(authentication.status(), JSON.stringify(authBody)).toBe(200);
 
-  const optionIds = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+  const optionIds = Array.from({ length: optionCount }, () => randomUUID());
+  const optionLabels = ["Red", "Blue", "Gold", "Green", "Purple", "Teal"];
   const questionId = randomUUID();
   const sessionResponse = await request.post("/api/sessions", {
     headers: {
@@ -63,13 +68,8 @@ export async function createApiHostedQuiz(request, title = "Mobile verification 
           text: "Which answer is red?",
           points: 1000,
           timerSeconds: 60,
-          options: [
-            { id: optionIds[0], text: "Red" },
-            { id: optionIds[1], text: "Blue" },
-            { id: optionIds[2], text: "Gold" },
-            { id: optionIds[3], text: "Green" }
-          ],
-          correctOptionId: optionIds[0],
+          options: optionIds.map((id, index) => ({ id, text: optionLabels[index] })),
+          correctOptionIds: correctOptionIndexes.map((index) => optionIds[index]),
           media: null
         }
       ]
@@ -80,7 +80,8 @@ export async function createApiHostedQuiz(request, title = "Mobile verification 
 
   return {
     csrfToken: authBody.csrfToken,
-    pin: sessionBody.pin
+    pin: sessionBody.pin,
+    optionIds
   };
 }
 
