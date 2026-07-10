@@ -2041,13 +2041,12 @@ async function playAgain() {
 
 async function leavePlayerSession() {
   const pin = state.remote?.pin || state.playerPin;
+  let leaveConfirmed = true;
   if (pin) {
     try {
       await postJson(`/api/sessions/${encodeURIComponent(pin)}/leave`, {});
-    } catch (error) {
-      if (error?.status !== 401 && error?.status !== 404) {
-        throw error;
-      }
+    } catch {
+      leaveConfirmed = false;
     }
   }
   if (state.eventSource) {
@@ -2059,7 +2058,9 @@ async function leavePlayerSession() {
   state.playerPin = "";
   state.restoreKey = "";
   state.remote = null;
-  state.notice = "You left the game.";
+  state.notice = leaveConfirmed
+    ? "You left the game."
+    : "You left this device, but the server could not confirm your departure.";
   updateBrowserUrl("/#player");
   render();
 }

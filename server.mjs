@@ -13,6 +13,7 @@ import {
   detectMediaMimeType,
   isStrictStableId,
   isTrustedOrigin,
+  resolveClientAddress,
   shouldPersistPresenterSession,
   validateMediaDataUrl,
   validateBodyByteLength,
@@ -4076,21 +4077,13 @@ function getRequestPrincipalKey(request, url) {
 }
 
 function getClientAddress(request) {
-  if (TRUST_PROXY) {
-    const realIp = String(request.headers["x-real-ip"] ?? "").trim();
-    if (realIp) {
-      return realIp.slice(0, 128);
-    }
-    const forwarded = request.headers["x-forwarded-for"];
-    const values = (Array.isArray(forwarded) ? forwarded.join(",") : String(forwarded ?? ""))
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (values.length > 0) {
-      return values[0].slice(0, 128);
-    }
-  }
-  return (request.socket.remoteAddress || "unknown").slice(0, 128);
+  return resolveClientAddress({
+    trustProxy: TRUST_PROXY,
+    realIp: Array.isArray(request.headers["x-real-ip"])
+      ? request.headers["x-real-ip"][0]
+      : request.headers["x-real-ip"],
+    remoteAddress: request.socket.remoteAddress
+  });
 }
 
 function getRequestOrigin(request) {

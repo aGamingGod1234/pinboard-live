@@ -237,18 +237,23 @@ test("media is signature-validated, stored separately, and supports byte ranges"
   assert.equal(activeContent.status, 415);
 });
 
-test("trusted proxy chains rate-limit distinct originating clients independently", async () => {
-  const sharedProxy = "10.0.0.20";
+test("trusted real-IP headers rate-limit distinct originating clients independently", async () => {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const response = await fetch(`${baseUrl}/auth/google`, {
-      headers: { "X-Forwarded-For": `198.51.100.10, ${sharedProxy}` },
+      headers: {
+        "X-Real-IP": "198.51.100.10",
+        "X-Forwarded-For": "spoofed-client, 10.0.0.20"
+      },
       redirect: "manual"
     });
     assert.equal(response.status, 503);
   }
 
   const differentClient = await fetch(`${baseUrl}/auth/google`, {
-    headers: { "X-Forwarded-For": `198.51.100.11, ${sharedProxy}` },
+    headers: {
+      "X-Real-IP": "198.51.100.11",
+      "X-Forwarded-For": "spoofed-client, 10.0.0.20"
+    },
     redirect: "manual"
   });
   assert.equal(differentClient.status, 503);

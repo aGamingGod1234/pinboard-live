@@ -90,12 +90,17 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     await expect(page.getByRole("button", { name: "Return to projects", exact: true })).toBeVisible();
     await expect(playerPage.getByRole("button", { name: "Leave", exact: true })).toBeVisible();
 
+    await playerPage.route(`**/api/sessions/${pin}/leave`, (route) => route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Temporary server failure" })
+    }));
     await playerContext.clearCookies();
     await playerPage.getByRole("button", { name: "Leave", exact: true }).click();
     await expect(playerPage.getByRole("button", { name: "Enter", exact: true })).toBeVisible();
-    const expectedUnauthorizedRequest = playerErrors.findIndex((error) => error.includes("status of 401"));
-    expect(expectedUnauthorizedRequest).toBeGreaterThanOrEqual(0);
-    playerErrors.splice(expectedUnauthorizedRequest, 1);
+    const expectedFailedLeaveRequest = playerErrors.findIndex((error) => error.includes("status of 503"));
+    expect(expectedFailedLeaveRequest).toBeGreaterThanOrEqual(0);
+    playerErrors.splice(expectedFailedLeaveRequest, 1);
 
     await page.getByRole("button", { name: "Play again", exact: true }).click();
     const replayPinBlock = page.getByText(/Game PIN:\s*\d{3}\s*\d{3}/).first();

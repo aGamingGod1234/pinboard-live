@@ -346,6 +346,25 @@ test("presenter sessions persist only when the request explicitly opts in", () =
   assert.equal(security.shouldPersistPresenterSession?.(undefined), false);
 });
 
+test("trusted proxy client identity uses only the canonical real-IP header", () => {
+  assert.equal(typeof security.resolveClientAddress, "function");
+  assert.equal(security.resolveClientAddress?.({
+    trustProxy: true,
+    realIp: "198.51.100.24",
+    remoteAddress: "10.0.0.7"
+  }), "198.51.100.24");
+  assert.equal(security.resolveClientAddress?.({
+    trustProxy: true,
+    realIp: "",
+    remoteAddress: "10.0.0.7"
+  }), "10.0.0.7");
+  assert.equal(security.resolveClientAddress?.({
+    trustProxy: false,
+    realIp: "198.51.100.24",
+    remoteAddress: "10.0.0.7"
+  }), "10.0.0.7");
+});
+
 test("createTokenBucketLimiter rejects unsafe configuration and keys", () => {
   assert.throws(() => security.createTokenBucketLimiter?.({ capacity: 0 }), { name: "TypeError" });
 
