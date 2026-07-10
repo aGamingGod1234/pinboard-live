@@ -9,6 +9,7 @@ import {
 
 const GOOGLE_BUTTON_HEIGHT = 48;
 const GOOGLE_ICON_SIZE = 18;
+const VISUALLY_HIDDEN_SIZE = 1;
 
 test("Google presenter button stays compact when provider inline styles are unavailable", async ({ page }) => {
   await page.goto("/presentation/login");
@@ -19,10 +20,13 @@ test("Google presenter button stays compact when provider inline styles are unav
     slot.className = "google-signin-slot";
     slot.dataset.googleSignin = "";
     slot.innerHTML = `
-      <div>
+      <div class="S9gUrf-YoZ4jf">
         <div role="button">
-          <span><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M0 0h48v48H0z"></path></svg></span>
-          <span>Continue with Google</span>
+          <div class="nsm7Bb-HzV7m-LgbsSe-bN97Pc-sM5MNb">
+            <div><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M0 0h48v48H0z"></path></svg></div>
+            <span class="nsm7Bb-HzV7m-LgbsSe-BPrWId">Continue with Google</span>
+            <span class="L6cTce">Continue with Google. Opens in new tab</span>
+          </div>
         </div>
       </div>
     `;
@@ -34,11 +38,14 @@ test("Google presenter button stays compact when provider inline styles are unav
 
     const button = slot.querySelector("[role='button']");
     const icon = slot.querySelector("svg");
+    const assistiveLabel = slot.querySelector(".L6cTce");
     return {
       slotHeight: slot.getBoundingClientRect().height,
       buttonHeight: button?.getBoundingClientRect().height ?? 0,
       iconWidth: icon?.getBoundingClientRect().width ?? 0,
-      iconHeight: icon?.getBoundingClientRect().height ?? 0
+      iconHeight: icon?.getBoundingClientRect().height ?? 0,
+      assistiveLabelWidth: assistiveLabel?.getBoundingClientRect().width ?? 0,
+      assistiveLabelHeight: assistiveLabel?.getBoundingClientRect().height ?? 0
     };
   });
 
@@ -46,6 +53,8 @@ test("Google presenter button stays compact when provider inline styles are unav
   expect(metrics.buttonHeight).toBe(GOOGLE_BUTTON_HEIGHT);
   expect(metrics.iconWidth).toBe(GOOGLE_ICON_SIZE);
   expect(metrics.iconHeight).toBe(GOOGLE_ICON_SIZE);
+  expect(metrics.assistiveLabelWidth).toBe(VISUALLY_HIDDEN_SIZE);
+  expect(metrics.assistiveLabelHeight).toBe(VISUALLY_HIDDEN_SIZE);
 });
 
 test("presenter creates a quiz and completes a resumable two-context live session", async ({ browser, page }) => {
