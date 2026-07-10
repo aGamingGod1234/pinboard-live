@@ -145,6 +145,52 @@ export function shouldShowLocalPresenterAuth(localAuthEnabled, googleClientId) {
   return localAuthEnabled === true && !googleClientId;
 }
 
+export function addQuizOption(question, createId) {
+  if (question.kind !== "quiz") throw new TypeError("Only regular quiz answers can be added.");
+  if (question.options.length >= 6) throw new RangeError("Quiz questions can have at most 6 answers.");
+  const id = createId();
+  return {
+    ...question,
+    options: [...question.options, { id, text: `Answer ${question.options.length + 1}` }]
+  };
+}
+
+export function removeQuizOption(question, optionId) {
+  if (question.kind !== "quiz") throw new TypeError("Only regular quiz answers can be removed.");
+  if (question.options.length <= 2) throw new RangeError("Quiz questions need at least 2 answers.");
+  const removedIndex = question.options.findIndex((option) => option.id === optionId);
+  if (removedIndex < 0) return question;
+  const options = question.options.filter((option) => option.id !== optionId);
+  const correctOptionIds = question.correctOptionIds.filter((id) => id !== optionId);
+  const targetCount = Math.min(question.correctOptionIds.length, options.length);
+  while (correctOptionIds.length < targetCount) {
+    const targetIndex = Math.min(removedIndex, options.length - 1);
+    const replacement = options
+      .map((option, index) => ({ option, index }))
+      .filter(({ option }) => !correctOptionIds.includes(option.id))
+      .sort((left, right) => Math.abs(left.index - targetIndex) - Math.abs(right.index - targetIndex) || left.index - right.index)[0]?.option;
+    if (!replacement) break;
+    correctOptionIds.push(replacement.id);
+  }
+  return { ...question, options, correctOptionIds };
+}
+
+export function toggleCorrectOption(question, optionId) {
+  if (!question.options.some((option) => option.id === optionId)) return question;
+  if (question.kind === "true_false") return { ...question, correctOptionIds: [optionId] };
+  if (question.correctOptionIds.includes(optionId)) {
+    if (question.correctOptionIds.length === 1) throw new RangeError("Quiz questions need at least 1 correct answer.");
+    return { ...question, correctOptionIds: question.correctOptionIds.filter((id) => id !== optionId) };
+  }
+  return { ...question, correctOptionIds: [...question.correctOptionIds, optionId] };
+}
+
+export function togglePendingSelection(currentIds, optionId, limit) {
+  if (currentIds.includes(optionId)) return currentIds.filter((id) => id !== optionId);
+  if (currentIds.length >= limit) throw new RangeError(`Select ${limit} answers.`);
+  return [...currentIds, optionId];
+}
+
 /**
  * Build a unique accessible name for a shape-only answer control.
  *
@@ -177,6 +223,19 @@ export function shouldPatchLiveState(previousState, nextState, role) {
     return false;
   }
   if (!isNonEmptyString(previousState.phase) || previousState.phase !== nextState.phase) {
+    return false;
+  }
+
+  const previousSelections = Array.isArray(previousState.selectedOptionIds)
+    ? previousState.selectedOptionIds
+    : [];
+  const nextSelections = Array.isArray(nextState.selectedOptionIds)
+    ? nextState.selectedOptionIds
+    : [];
+  if (
+    previousSelections.length !== nextSelections.length
+    || previousSelections.some((optionId, index) => optionId !== nextSelections[index])
+  ) {
     return false;
   }
 

@@ -670,6 +670,9 @@ async function handleCreateMedia(request, response) {
     const declaredMimeType = normalizeMimeTypeHeader(request.headers["content-type"]);
     const data = await readRawBody(request, MAX_MEDIA_BYTES);
     const detectedMimeType = detectMediaMimeType(data);
+    if (!detectedMimeType?.startsWith("image/")) {
+      throw new HttpError(415, "Question media must be a supported image.");
+    }
     if (!detectedMimeType || detectedMimeType !== declaredMimeType) {
       throw new HttpError(415, "Media type does not match the file contents.", "MEDIA_SIGNATURE_MISMATCH");
     }
@@ -3692,14 +3695,15 @@ async function migrateLegacyLiveSessionState() {
         });
       }
       for (const [playerId, answer] of Array.isArray(snapshot.answers) ? snapshot.answers : []) {
-        if (!isStrictStableId(playerId) || !isSafeLegacyStableId(answer?.optionId)) {
+        const selectedOptionIds = normalizePersistedSelectedOptionIds(answer).filter(isSafeLegacyStableId);
+        if (!isStrictStableId(playerId) || selectedOptionIds.length === 0) {
           continue;
         }
         await client.query(
           `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, selected_option_ids, answered_at)
            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
            ON CONFLICT (pin, question_index, player_id) DO NOTHING`,
-          [record.pin, Number(snapshot.currentQuestionIndex ?? -1), playerId, answer.optionId, JSON.stringify([answer.optionId]), Number(answer.answeredAt ?? Date.now())]
+          [record.pin, Number(snapshot.currentQuestionIndex ?? -1), playerId, selectedOptionIds[0], JSON.stringify(selectedOptionIds), Number(answer.answeredAt ?? Date.now())]
         );
       }
       if (normalizedIds.changed || hasEmbeddedState) {
@@ -3748,12 +3752,19 @@ function normalizeLegacySnapshotIds(sourceSnapshot) {
         optionMap.set(oldId, option.id);
       }
     }
-    if (typeof question.correctOptionId === "string" && optionMap.has(question.correctOptionId)) {
-      const nextCorrectOptionId = optionMap.get(question.correctOptionId);
-      if (nextCorrectOptionId !== question.correctOptionId) {
-        question.correctOptionId = nextCorrectOptionId;
-        changed = true;
-      }
+    const sourceCorrectOptionIds = Array.isArray(question.correctOptionIds)
+      ? question.correctOptionIds
+      : typeof question.correctOptionId === "string" ? [question.correctOptionId] : [];
+    const normalizedCorrectOptionIds = sourceCorrectOptionIds
+      .map((optionId) => optionMap.get(optionId) ?? optionId)
+      .filter((optionId) => optionIds.has(optionId));
+    if (JSON.stringify(question.correctOptionIds ?? []) !== JSON.stringify(normalizedCorrectOptionIds)) {
+      question.correctOptionIds = normalizedCorrectOptionIds;
+      changed = true;
+    }
+    if (Object.hasOwn(question, "correctOptionId")) {
+      delete question.correctOptionId;
+      changed = true;
     }
     optionMaps.push(optionMap);
   }
@@ -3762,12 +3773,17 @@ function normalizeLegacySnapshotIds(sourceSnapshot) {
   if (Array.isArray(snapshot.answers)) {
     for (const entry of snapshot.answers) {
       const answer = entry?.[1];
-      if (typeof answer?.optionId === "string" && currentOptionMap.has(answer.optionId)) {
-        const nextOptionId = currentOptionMap.get(answer.optionId);
-        if (nextOptionId !== answer.optionId) {
-          answer.optionId = nextOptionId;
-          changed = true;
-        }
+      if (!answer || typeof answer !== "object") continue;
+      const sourceSelectedOptionIds = normalizePersistedSelectedOptionIds(answer);
+      const normalizedSelectedOptionIds = sourceSelectedOptionIds.map((optionId) => currentOptionMap.get(optionId) ?? optionId);
+      if (JSON.stringify(answer.selectedOptionIds ?? []) !== JSON.stringify(normalizedSelectedOptionIds)) {
+        answer.selectedOptionIds = normalizedSelectedOptionIds;
+        changed = true;
+      }
+      const normalizedPrimaryOptionId = normalizedSelectedOptionIds[0];
+      if (normalizedPrimaryOptionId && answer.optionId !== normalizedPrimaryOptionId) {
+        answer.optionId = normalizedPrimaryOptionId;
+        changed = true;
       }
     }
   }

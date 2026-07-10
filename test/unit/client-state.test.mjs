@@ -2,14 +2,53 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  addQuizOption,
   createAnswerAccessibleName,
   createClientId,
   createDraftSaveCoordinator,
+  removeQuizOption,
   shouldAcceptLiveState,
   shouldShowLocalPresenterAuth,
   shouldPatchLiveState,
-  shouldRetainResumeCredential
+  shouldRetainResumeCredential,
+  toggleCorrectOption,
+  togglePendingSelection
 } from "../../public/client-state.js";
+
+const quizQuestion = {
+  kind: "quiz",
+  options: ["a", "b", "c", "d", "e", "f"].map((id) => ({ id, text: id.toUpperCase() })),
+  correctOptionIds: ["b", "d"]
+};
+
+test("quiz option helpers enforce limits and promote the nearest correct answer", () => {
+  const removed = removeQuizOption(quizQuestion, "b");
+  assert.deepEqual(removed.options.map(({ id }) => id), ["a", "c", "d", "e", "f"]);
+  assert.deepEqual(removed.correctOptionIds, ["d", "c"]);
+  assert.throws(() => addQuizOption(quizQuestion, () => "g"), /at most 6/);
+  assert.throws(() => removeQuizOption({ ...quizQuestion, options: quizQuestion.options.slice(0, 2), correctOptionIds: ["a"] }, "a"), /at least 2/);
+});
+
+test("correct toggles retain at least one correct answer", () => {
+  assert.deepEqual(toggleCorrectOption(quizQuestion, "a").correctOptionIds, ["b", "d", "a"]);
+  assert.deepEqual(toggleCorrectOption(quizQuestion, "b").correctOptionIds, ["d"]);
+  assert.throws(() => toggleCorrectOption({ ...quizQuestion, correctOptionIds: ["b"] }, "b"), /at least 1/);
+});
+
+test("true or false questions always switch to exactly one correct answer", () => {
+  const question = {
+    kind: "true_false",
+    options: quizQuestion.options.slice(0, 2),
+    correctOptionIds: ["a"]
+  };
+  assert.deepEqual(toggleCorrectOption(question, "b").correctOptionIds, ["b"]);
+});
+
+test("pending multi-selection toggles choices without exceeding the limit", () => {
+  assert.deepEqual(togglePendingSelection(["a"], "b", 2), ["a", "b"]);
+  assert.deepEqual(togglePendingSelection(["a", "b"], "a", 2), ["b"]);
+  assert.throws(() => togglePendingSelection(["a", "b"], "c", 2), /Select 2/);
+});
 
 test("createClientId uses randomUUID when it is available", () => {
   const expectedId = "1183ac8e-6a20-4e35-82ec-7bc612b71876";
@@ -143,15 +182,19 @@ test("live player state is patched only when answer-grid identity is stable", ()
     pin: "123456",
     phase: "answering",
     currentQuestion: { id: "question-1" },
-    selectedOptionId: null
+    selectedOptionIds: []
   };
   const next = {
     ...previous,
     playerCount: 2,
-    selectedOptionId: "option-1"
+    selectedOptionIds: ["option-1"]
   };
 
-  assert.equal(shouldPatchLiveState(previous, next, "player"), true);
+  assert.equal(shouldPatchLiveState(previous, next, "player"), false);
+  assert.equal(
+    shouldPatchLiveState({ ...previous, selectedOptionIds: ["option-1"] }, next, "player"),
+    true
+  );
   assert.equal(shouldPatchLiveState(previous, { ...next, pin: "654321" }, "player"), false);
   assert.equal(shouldPatchLiveState(previous, { ...next, phase: "results" }, "player"), false);
   assert.equal(

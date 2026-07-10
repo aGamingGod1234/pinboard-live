@@ -1,11 +1,15 @@
 import {
+  addQuizOption,
   createAnswerAccessibleName,
   createClientId,
   createDraftSaveCoordinator,
+  removeQuizOption,
   shouldAcceptLiveState,
   shouldPatchLiveState,
   shouldShowLocalPresenterAuth,
-  shouldRetainResumeCredential
+  shouldRetainResumeCredential,
+  toggleCorrectOption,
+  togglePendingSelection
 } from "./client-state.js";
 
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
@@ -114,6 +118,7 @@ const state = {
   remote: null,
   restoreKey: initialHashPlayerPin && initialHashPlayerPin !== storedPlayerPin ? initialHashPlayerPin : "",
   draft: createDraft(),
+  pendingSelections: new Map(),
   activeQuestionId: "",
   eventSource: null,
   error: "",
@@ -256,6 +261,9 @@ document.addEventListener("click", async (event) => {
     if (action === "add-question") addQuestion();
     if (action === "select-question") selectQuestion(button.dataset.questionId);
     if (action === "remove-question") removeQuestion(button.dataset.questionId);
+    if (action === "add-answer") addAnswer(button.dataset.questionId);
+    if (action === "remove-answer") removeAnswer(button.dataset.questionId, button.dataset.optionId);
+    if (action === "remove-question-media") removeQuestionMedia(button.dataset.questionId);
     if (action === "choose-media") chooseMedia(button.dataset.questionId);
     if (action === "copy-link") await copyJoinLink();
     if (action === "reset-deck") resetDeck();
@@ -267,7 +275,8 @@ document.addEventListener("click", async (event) => {
     if (action === "play-again") await playAgain();
     if (action === "leave-player") await leavePlayerSession();
     if (action === "dismiss-message") clearMessages();
-    if (action === "answer") await submitAnswer(button.dataset.optionId);
+    if (action === "answer") await selectPlayerAnswer(button.dataset.optionId);
+    if (action === "submit-multi-answer") await submitAnswer(state.pendingSelections.get(state.remote?.currentQuestion?.id) ?? []);
   } catch (error) {
     showError(error);
   } finally {
@@ -495,24 +504,6 @@ function restoreFocusSnapshot(snapshot) {
 }
 
 function patchPlayerLiveState(remote) {
-  const question = remote.currentQuestion;
-  if (!question) {
-    return;
-  }
-
-  const selectedOptionId = remote.selectedOptionId;
-  const canAnswer = isAnswerEntryOpen(remote) && !selectedOptionId;
-  for (const button of document.querySelectorAll('[data-action="answer"]')) {
-    const isSelected = button.dataset.optionId === selectedOptionId;
-    button.disabled = !canAnswer;
-    button.classList.toggle("is-selected", isSelected);
-    button.setAttribute("aria-pressed", isSelected ? "true" : "false");
-  }
-
-  const status = document.querySelector("[data-player-answer-status]");
-  if (status) {
-    status.textContent = getPlayerAnswerStatus(remote, question, selectedOptionId, canAnswer);
-  }
   patchCountValue(`player-score:${state.playerId ?? "player"}`, remote.me?.score ?? 0);
   patchCountValue(`player-lobby-players:${remote.pin}`, remote.playerCount ?? 0);
 }
@@ -552,7 +543,7 @@ function syncEditorDraftPreview(question) {
       if (optionIndex >= 0) {
         radio.setAttribute(
           "aria-label",
-          `Mark option ${optionIndex + 1} as correct: ${question.options[optionIndex].text}`
+          `Toggle option ${optionIndex + 1} as correct: ${question.options[optionIndex].text}`
         );
       }
     }
@@ -937,13 +928,13 @@ function renderCreator() {
 function renderQuestionEditor(question, index) {
   const isSlide = question.kind === "slide";
   const mediaLabel = question.media ? `
-      <label>Media
-        <input type="file" accept="image/*,video/*" data-field="media" data-question-id="${question.id}" />
-      </label>
-      <p class="muted">${escapeHtml(question.media.name)} - ${formatBytes(question.media.size)}</p>
+      <div class="question-media-editor" tabindex="0">
+        <img src="${escapeHtml(question.media.url)}" alt="Question image preview" />
+        <button type="button" class="question-media-remove" data-action="remove-question-media" data-question-id="${question.id}" aria-label="Remove question image">×</button>
+      </div>
     ` : `
-      <button type="button" class="secondary media-add-button" data-action="choose-media" data-question-id="${question.id}">Add media</button>
-      <input class="hidden" type="file" accept="image/*,video/*" data-field="media" data-question-id="${question.id}" />
+      <button type="button" class="secondary media-add-button" data-action="choose-media" data-question-id="${question.id}">Add image</button>
+      <input class="hidden" type="file" accept="image/png,image/jpeg,image/gif,image/webp" data-field="media" data-question-id="${question.id}" aria-label="Question image" />
     `;
 
   return `
@@ -975,16 +966,24 @@ function renderQuestionEditor(question, index) {
 }
 
 function renderOptionEditor(question) {
+  const isQuiz = question.kind === "quiz";
+  const correctCount = question.correctOptionIds.length;
   return `
-    <div class="option-list">
+    <div class="option-editor-head">
+      <strong>${correctCount} correct answer${correctCount === 1 ? "" : "s"}</strong>
+      <span>Players select ${correctCount}</span>
+    </div>
+    <div class="option-list" data-option-count="${question.options.length}">
       ${question.options.map((option, index) => `
         <div class="option-row" data-tone="${OPTION_TONES[index] ?? "red"}">
-          <input type="radio" name="correct-${question.id}" data-field="correctOption" data-question-id="${question.id}" value="${option.id}" ${option.id === question.correctOptionId ? "checked" : ""} aria-label="Mark option ${index + 1} as correct: ${escapeHtml(option.text)}" />
+          <input type="${isQuiz ? "checkbox" : "radio"}" ${isQuiz ? "" : `name="correct-${question.id}"`} data-field="correctOption" data-question-id="${question.id}" value="${option.id}" ${question.correctOptionIds.includes(option.id) ? "checked" : ""} aria-label="Toggle option ${index + 1} as correct: ${escapeHtml(option.text)}" />
           <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
           <input data-field="optionText" data-question-id="${question.id}" data-option-id="${option.id}" maxlength="${MAX_OPTION_TEXT_LENGTH}" value="${escapeHtml(option.text)}" aria-label="Option ${index + 1} text" />
+          ${isQuiz ? `<button type="button" class="option-remove" data-action="remove-answer" data-question-id="${question.id}" data-option-id="${option.id}" ${question.options.length <= 2 ? "disabled" : ""} aria-label="Remove option ${index + 1}">×</button>` : ""}
         </div>
       `).join("")}
     </div>
+    ${isQuiz ? `<div class="option-editor-foot"><span>Answers ${question.options.length}/6</span><button type="button" class="secondary" data-action="add-answer" data-question-id="${question.id}" ${question.options.length >= 6 ? "disabled" : ""}>Add answer</button></div>` : ""}
   `;
 }
 
@@ -1052,13 +1051,10 @@ function renderPresenterStageBody(remote, question) {
   }
 
   if (remote.phase === "results") {
-    return `
-      <div class="results-stack">
-        ${question ? renderLiveQuestion(remote, true) : renderLobby(remote)}
-        ${renderLeaderboardBreak(remote)}
-      </div>
-    `;
+    return renderPresenterResults(remote);
   }
+
+  if (remote.phase === "leaderboard") return renderLeaderboardBreak(remote);
 
   return question ? renderLiveQuestion(remote, true) : renderLobby(remote);
 }
@@ -1184,12 +1180,42 @@ function renderPlayerWaiting(remote) {
 
 function renderPlayerAnswerStage(remote) {
   const question = remote.currentQuestion;
-  const selectedOptionId = remote.selectedOptionId;
-  const canAnswer = isAnswerEntryOpen(remote) && !selectedOptionId;
+  if (remote.phase === "leaderboard") return renderLeaderboardBreak(remote);
+  const submittedIds = remote.selectedOptionIds ?? [];
+  const requiredCount = Math.max(1, Number(remote.requiredSelectionCount) || 1);
+  const pendingIds = state.pendingSelections.get(question.id) ?? [];
   const showResults = remote.phase === "results" || remote.phase === "ended";
-  const isCorrect = showResults && selectedOptionId === question.correctOptionId;
-  const earnedPoints = isCorrect ? question.points : 0;
-  const answerStatus = getPlayerAnswerStatus(remote, question, selectedOptionId, canAnswer);
+
+  if (showResults) {
+    const outcomeCopy = {
+      correct: ["Correct", "Lightning fast and lightning smart."],
+      partial: ["Partially correct", "So close — you found part of it."],
+      incorrect: ["Incorrect", "Better luck next time."],
+      timeout: ["Time's up", "Lock it in sooner next time."]
+    }[remote.answerOutcome ?? "timeout"];
+    return `
+      <section class="shader-screen shader-player player-stage player-reveal-stage">
+        <div class="role-badge">Player</div>
+        <div class="player-result-card" data-outcome="${escapeHtml(remote.answerOutcome ?? "timeout")}">
+          <p class="eyebrow">${escapeHtml(formatProgress(remote))}</p>
+          <h1>${escapeHtml(outcomeCopy[0])}</h1>
+          <p>${escapeHtml(outcomeCopy[1])}</p>
+          <strong class="points-awarded">+${Number(remote.awardedPoints ?? 0).toLocaleString()} points</strong>
+          <p>${submittedIds.length ? `You selected ${submittedIds.map((id) => escapeHtml(question.options.find((option) => option.id === id)?.text ?? "Unknown")).join(", ")}.` : "You did not answer in time."}</p>
+        </div>
+      </section>`;
+  }
+
+  if (submittedIds.length > 0) {
+    return `
+      <section class="shader-screen shader-player player-stage player-submitted-stage">
+        <div class="role-badge">Player</div>
+        <div class="player-result-card"><p class="eyebrow">Answer submitted</p><h1>Lightning fast</h1><p>But did you get it right?</p></div>
+      </section>`;
+  }
+
+  const canAnswer = isAnswerEntryOpen(remote);
+  const selectionLimitReached = requiredCount > 1 && pendingIds.length >= requiredCount;
 
   return `
     <section class="shader-screen shader-player player-stage player-answer-stage" data-motion-trigger="ambient-drift">
@@ -1201,34 +1227,28 @@ function renderPlayerAnswerStage(remote) {
           <p>The presenter is showing a slide.</p>
         </div>
       ` : `
-        <div class="player-answer-grid">
+        ${requiredCount > 1 ? `<div class="player-selection-guide" role="status">Select ${requiredCount} answers · ${pendingIds.length} of ${requiredCount} selected</div>` : ""}
+        <div class="player-answer-grid" data-option-count="${question.options.length}">
           ${question.options.map((option, index) => {
-            const isSelected = selectedOptionId === option.id;
-            const optionCorrect = showResults && option.id === question.correctOptionId;
-            const optionWrong = showResults && isSelected && option.id !== question.correctOptionId;
-            const resultDescription = optionCorrect
-              ? "Correct answer"
-              : optionWrong
-                ? "Your answer, incorrect"
-                : "";
+            const isSelected = pendingIds.includes(option.id);
+            const isUnavailable = !canAnswer || (selectionLimitReached && !isSelected);
             const accessibleName = `${createAnswerAccessibleName({
               index,
               tone: OPTION_TONES[index] ?? "red",
               shape: OPTION_SHAPES[index] ?? "circle"
-            })}: ${option.text}${resultDescription ? `. ${resultDescription}` : ""}`;
+            })}: ${option.text}`;
             return `
-              <button type="button" class="answer-button player-answer-button ${isSelected ? "is-selected" : ""} ${optionCorrect ? "is-correct" : ""} ${optionWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${escapeHtml(option.id)}" aria-label="${escapeHtml(accessibleName)}" aria-pressed="${isSelected ? "true" : "false"}" ${canAnswer ? "" : "disabled"}>
+              <button type="button" class="answer-button player-answer-button ${isSelected ? "is-selected" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${escapeHtml(option.id)}" aria-label="${escapeHtml(accessibleName)}" aria-pressed="${isSelected ? "true" : "false"}" ${isUnavailable ? "disabled" : ""}>
                 <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
               </button>
             `;
           }).join("")}
         </div>
+        ${requiredCount > 1 ? `<button type="button" class="player-submit-answers" data-action="submit-multi-answer" ${pendingIds.length === requiredCount ? "" : "disabled"}>Submit answers</button>` : ""}
       `}
-      <p class="sr-only" data-player-answer-status role="status" aria-live="polite">${escapeHtml(answerStatus)}</p>
       <div class="player-score-dock">
         <strong>${escapeHtml(remote.me?.nickname ?? "Player")}</strong>
         ${renderCount(remote.me?.score ?? 0, `player-score:${state.playerId ?? "player"}`)}
-        ${earnedPoints ? `<em>+${earnedPoints}</em>` : ""}
       </div>
     </section>
   `;
@@ -1236,10 +1256,10 @@ function renderPlayerAnswerStage(remote) {
 
 function renderLiveQuestion(remote, isHost) {
   const question = remote.currentQuestion;
-  const selectedOptionId = remote.selectedOptionId;
+  const selectedOptionIds = remote.selectedOptionIds ?? [];
   const answerTotal = Math.max(0, Number(remote.answerCount) || 0);
   const answerProgressMaximum = Math.max(1, answerTotal);
-  const canAnswer = !isHost && isAnswerEntryOpen(remote) && !selectedOptionId;
+  const canAnswer = !isHost && isAnswerEntryOpen(remote) && selectedOptionIds.length === 0;
   const showResults = remote.phase === "results" || remote.phase === "ended";
 
   return `
@@ -1249,14 +1269,15 @@ function renderLiveQuestion(remote, isHost) {
         <strong>${renderCount(remote.answerCount, `answers:${remote.pin}:${question.id}`)} answers</strong>
       </div>
       <h1>${escapeHtml(question.text)}</h1>
+      ${isHost && remote.phase === "answering" ? renderStageTimer(remote) : ""}
       ${isHost ? renderPresenterQuestionFrame(question, remote) : `<div class="question-media-frame">${renderMedia(question.media)}</div>`}
       ${question.kind === "slide" ? "" : `
         <div class="answer-grid">
           ${question.options.map((option, index) => {
             const count = remote.answerCounts?.[option.id] ?? 0;
-            const isSelected = selectedOptionId === option.id;
-            const isCorrect = showResults && option.id === question.correctOptionId;
-            const isWrong = showResults && isSelected && option.id !== question.correctOptionId;
+            const isSelected = selectedOptionIds.includes(option.id);
+            const isCorrect = showResults && question.correctOptionIds.includes(option.id);
+            const isWrong = showResults && isSelected && !question.correctOptionIds.includes(option.id);
             return `
               <button type="button" class="answer-button ${isSelected ? "is-selected" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
                 <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
@@ -1294,26 +1315,7 @@ function renderMedia(media) {
     return "";
   }
 
-  if (media.type?.startsWith("video/")) {
-    return `<video class="media-preview" src="${escapeHtml(media.url)}" controls></video>`;
-  }
-
   return `<img class="media-preview" src="${escapeHtml(media.url)}" alt="" />`;
-}
-
-function getPlayerAnswerStatus(remote, question, selectedOptionId, canAnswer) {
-  const showResults = remote.phase === "results" || remote.phase === "ended";
-  if (showResults) {
-    if (!selectedOptionId) {
-      return "No answer was submitted.";
-    }
-    if (selectedOptionId === question.correctOptionId) {
-      return `Correct. You earned ${question.points} points.`;
-    }
-    const correctAnswer = question.options.find((option) => option.id === question.correctOptionId)?.text;
-    return correctAnswer ? `Incorrect. The correct answer was ${correctAnswer}.` : "Incorrect.";
-  }
-  return selectedOptionId ? "Answer submitted." : canAnswer ? "Choose an answer." : "Waiting for the presenter.";
 }
 
 function renderLeaderboard(players, scope = "leaderboard") {
@@ -1355,7 +1357,6 @@ function renderStageBar(remote, variant) {
       <div class="stage-tools" aria-label="Host tools">
         <span class="role-badge role-badge-inline">Presenter</span>
         ${renderCount(remote.playerCount, `stage-players:${remote.pin}`)}
-        ${renderStageTimer(remote)}
         <button type="button" data-action="copy-link">Copy link</button>
         ${renderStagePrimaryButton(remote)}
         <button type="button" data-action="host-end" ${remote.phase === "ended" ? "disabled" : ""}>End</button>
@@ -1381,6 +1382,7 @@ function getStagePrimaryAction(remote) {
   if (remote.phase === "question") return isSlide ? { action: "host-next", label: "Next" } : { action: "host-open", label: "Open answers" };
   if (remote.phase === "answering") return { action: "host-reveal", label: "Skip timer" };
   if (remote.phase === "results") return { action: "host-next", label: "Next" };
+  if (remote.phase === "leaderboard") return { action: "host-next", label: "Next question" };
   return null;
 }
 
@@ -1430,7 +1432,7 @@ function renderStageTimer(remote) {
 
   const startedAt = Number(remote.openedAt);
   const remainingMs = getQuestionTimerRemainingMs(startedAt, durationMs);
-  return `<span class="stage-timer" data-live-timer-started-at="${startedAt}" data-live-timer-duration-ms="${durationMs}">${formatCountdownTime(remainingMs)}</span>`;
+  return `<div class="stage-timer stage-timer-prominent" data-live-timer-started-at="${startedAt}" data-live-timer-duration-ms="${durationMs}" aria-label="Time remaining">${formatCountdownTime(remainingMs)}</div>`;
 }
 
 async function loadPublicConfig() {
@@ -1855,7 +1857,9 @@ function clonePresentationSnapshot(snapshot) {
         id: option.id || createClientId(),
         text: limitClientText(option.text ?? "", MAX_OPTION_TEXT_LENGTH)
       })) : createOptions(DEFAULT_OPTIONS),
-      correctOptionId: question.correctOptionId ?? question.options?.[0]?.id ?? null,
+      correctOptionIds: Array.isArray(question.correctOptionIds)
+        ? question.correctOptionIds
+        : [question.correctOptionId ?? question.options?.[0]?.id].filter(Boolean),
       media: question.media ?? null
     }))
   };
@@ -1871,7 +1875,7 @@ function serializeDraftForSave() {
       points: question.kind === "slide" ? 0 : Number(question.points),
       timerSeconds: question.kind === "slide" ? 0 : normalizeClientTimerSeconds(question.timerSeconds),
       options: question.kind === "slide" ? [] : question.options,
-      correctOptionId: isScoredQuestionKind(question.kind) ? question.correctOptionId : null,
+      correctOptionIds: isScoredQuestionKind(question.kind) ? question.correctOptionIds : [],
       media: question.media
     }))
   };
@@ -1953,7 +1957,7 @@ async function createSession() {
       points: question.kind === "slide" ? 0 : Number(question.points),
       timerSeconds: question.kind === "slide" ? 0 : normalizeClientTimerSeconds(question.timerSeconds),
       options: question.kind === "slide" ? [] : question.options,
-      correctOptionId: isScoredQuestionKind(question.kind) ? question.correctOptionId : null,
+      correctOptionIds: isScoredQuestionKind(question.kind) ? question.correctOptionIds : [],
       media: question.media
     }))
   };
@@ -2074,13 +2078,50 @@ async function leavePlayerSession() {
   render();
 }
 
-async function submitAnswer(optionId) {
+async function selectPlayerAnswer(optionId) {
+  const question = state.remote?.currentQuestion;
+  const requiredCount = Math.max(1, Number(state.remote?.requiredSelectionCount) || 1);
+  if (!question) return;
+  if (requiredCount === 1) {
+    await submitAnswer([optionId]);
+    return;
+  }
+  const current = state.pendingSelections.get(question.id) ?? [];
+  state.pendingSelections.set(question.id, togglePendingSelection(current, optionId, requiredCount));
+  render();
+}
+
+function renderPresenterResults(remote) {
+  const question = remote.currentQuestion;
+  if (!question) return renderLobby(remote);
+  const submitted = Math.max(0, Number(remote.answerCount) || 0);
+  return `
+    <section class="presenter-results">
+      <h1>${escapeHtml(question.text)}</h1>
+      ${question.media ? `<div class="presenter-result-media">${renderMedia(question.media)}</div>` : ""}
+      <div class="answer-distribution-chart" data-option-count="${question.options.length}">
+        ${question.options.map((option, index) => {
+          const count = Number(remote.answerCounts?.[option.id] ?? 0);
+          const percentage = submitted > 0 ? Math.round(count / submitted * 100) : 0;
+          const correct = question.correctOptionIds.includes(option.id);
+          return `<div class="answer-result-bar ${correct ? "is-correct" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" aria-label="${escapeHtml(option.text)}, ${count} selections, ${percentage} percent${correct ? ", correct answer" : ""}">
+            <svg class="answer-result-fill" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="${100 - percentage}" width="100" height="${percentage}" /></svg>
+            <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
+            <strong>${escapeHtml(option.text)}</strong><span>${count} · ${percentage}%</span>${correct ? "<em>✓ Correct</em>" : ""}
+          </div>`;
+        }).join("")}
+      </div>
+    </section>`;
+}
+
+async function submitAnswer(selectedOptionIds) {
   if (!state.remote?.pin || !state.playerId) {
     throw new Error("Join a session before answering.");
   }
   const response = await postJson(`/api/sessions/${state.remote.pin}/answer`, {
-    optionId
+    selectedOptionIds
   });
+  if (state.remote.currentQuestion?.id) state.pendingSelections.delete(state.remote.currentQuestion.id);
   if (response.session) {
     applyRemoteState(response.session);
   } else {
@@ -2250,7 +2291,10 @@ function updateFromInput(target) {
     question.timerSeconds = normalizeClientTimerSeconds(target.value);
     target.value = question.timerSeconds;
   }
-  if (field === "correctOption") question.correctOptionId = target.value;
+  if (field === "correctOption") {
+    Object.assign(question, toggleCorrectOption(question, target.value));
+    requiresRender = true;
+  }
   if (field === "optionText") {
     const option = question.options.find((item) => item.id === optionId);
     if (option) {
@@ -2275,6 +2319,9 @@ function applyCompactAnswerState(answer) {
     ...state.remote,
     version: Math.max(Number(state.remote.version) || 0, Number(answer.version) || 0),
     answerCount: Number.isSafeInteger(answer.answerCount) ? answer.answerCount : state.remote.answerCount,
+    selectedOptionIds: Array.isArray(answer.selectedOptionIds)
+      ? answer.selectedOptionIds
+      : state.remote.selectedOptionIds,
     selectedOptionId: typeof answer.selectedOptionId === "string"
       ? answer.selectedOptionId
       : state.remote.selectedOptionId
@@ -2299,8 +2346,12 @@ async function attachMedia(target) {
     return;
   }
 
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Choose a supported image file.");
+  }
+
   if (file.size > MAX_MEDIA_BYTES) {
-    throw new Error("Media must be 100 MB or smaller.");
+    throw new Error("Image must be 100 MB or smaller.");
   }
 
   const response = await uploadMedia(file);
@@ -2369,6 +2420,30 @@ function addQuestion() {
   markPresentationDirty();
   render();
   requestAnimationFrame(() => selectQuestion(question.id));
+}
+
+function addAnswer(questionId) {
+  const question = findQuestion(questionId);
+  if (!question) return;
+  Object.assign(question, addQuizOption(question, createClientId));
+  markPresentationDirty();
+  render();
+}
+
+function removeAnswer(questionId, optionId) {
+  const question = findQuestion(questionId);
+  if (!question) return;
+  Object.assign(question, removeQuizOption(question, optionId));
+  markPresentationDirty();
+  render();
+}
+
+function removeQuestionMedia(questionId) {
+  const question = findQuestion(questionId);
+  if (!question?.media) return;
+  question.media = null;
+  markPresentationDirty();
+  render();
 }
 
 function removeQuestion(questionId) {
@@ -2581,7 +2656,7 @@ function createQuestion() {
     points: DEFAULT_POINTS,
     timerSeconds: DEFAULT_TIMER_SECONDS,
     options,
-    correctOptionId: options[0].id,
+    correctOptionIds: [options[0].id],
     media: null
   };
 }
@@ -2615,13 +2690,13 @@ function applyQuestionKind(question, kind) {
   if (kind === "slide") {
     question.points = 0;
     question.timerSeconds = 0;
-    question.correctOptionId = null;
+    question.correctOptionIds = [];
     return;
   }
 
   if (kind === "true_false") {
     question.options = createOptions(TRUE_FALSE_OPTIONS);
-    question.correctOptionId = question.options[0].id;
+    question.correctOptionIds = [question.options[0].id];
     question.points = question.points > 0 ? question.points : DEFAULT_POINTS;
     question.timerSeconds = question.timerSeconds > 0 ? normalizeClientTimerSeconds(question.timerSeconds) : DEFAULT_TIMER_SECONDS;
     return;
@@ -2633,9 +2708,8 @@ function applyQuestionKind(question, kind) {
 
   question.points = question.points > 0 ? question.points : DEFAULT_POINTS;
   question.timerSeconds = question.timerSeconds > 0 ? normalizeClientTimerSeconds(question.timerSeconds) : DEFAULT_TIMER_SECONDS;
-  if (!question.options.some((option) => option.id === question.correctOptionId)) {
-    question.correctOptionId = question.options[0]?.id ?? null;
-  }
+  question.correctOptionIds = (question.correctOptionIds ?? []).filter((id) => question.options.some((option) => option.id === id));
+  if (question.correctOptionIds.length === 0 && question.options[0]) question.correctOptionIds = [question.options[0].id];
 }
 
 function isTrueFalseOptionSet(options) {
