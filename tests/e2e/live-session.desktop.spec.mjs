@@ -7,6 +7,47 @@ import {
   loginPresenter
 } from "./support.mjs";
 
+const GOOGLE_BUTTON_HEIGHT = 48;
+const GOOGLE_ICON_SIZE = 18;
+
+test("Google presenter button stays compact when provider inline styles are unavailable", async ({ page }) => {
+  await page.goto("/presentation/login");
+  await page.waitForSelector(".presenter-login-card");
+
+  const metrics = await page.evaluate(() => {
+    const slot = document.createElement("div");
+    slot.className = "google-signin-slot";
+    slot.dataset.googleSignin = "";
+    slot.innerHTML = `
+      <div>
+        <div role="button">
+          <span><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M0 0h48v48H0z"></path></svg></span>
+          <span>Continue with Google</span>
+        </div>
+      </div>
+    `;
+    const card = document.querySelector(".presenter-login-card");
+    if (!card) {
+      throw new Error("Presenter login card not found");
+    }
+    card.append(slot);
+
+    const button = slot.querySelector("[role='button']");
+    const icon = slot.querySelector("svg");
+    return {
+      slotHeight: slot.getBoundingClientRect().height,
+      buttonHeight: button?.getBoundingClientRect().height ?? 0,
+      iconWidth: icon?.getBoundingClientRect().width ?? 0,
+      iconHeight: icon?.getBoundingClientRect().height ?? 0
+    };
+  });
+
+  expect(metrics.slotHeight).toBe(GOOGLE_BUTTON_HEIGHT);
+  expect(metrics.buttonHeight).toBe(GOOGLE_BUTTON_HEIGHT);
+  expect(metrics.iconWidth).toBe(GOOGLE_ICON_SIZE);
+  expect(metrics.iconHeight).toBe(GOOGLE_ICON_SIZE);
+});
+
 test("presenter creates a quiz and completes a resumable two-context live session", async ({ browser, page }) => {
   let presenterErrors;
   const playerContext = await browser.newContext({ baseURL: BASE_URL });

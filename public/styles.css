@@ -617,10 +617,48 @@ label {
 .google-signin-slot {
   display: grid;
   min-height: 48px;
+  max-height: 48px;
+  overflow: hidden;
 }
 
 .google-signin-slot > div {
+  display: grid !important;
+  height: 48px !important;
+  max-height: 48px !important;
   justify-self: stretch;
+}
+
+.google-signin-slot [role="button"] {
+  display: flex !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  height: 48px !important;
+  min-height: 48px !important;
+  max-height: 48px !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(17, 19, 26, 0.18) !important;
+  border-radius: 8px !important;
+  background: #fff !important;
+  color: var(--ink) !important;
+  cursor: pointer !important;
+}
+
+.google-signin-slot [role="button"] > :not(:empty) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+}
+
+.google-signin-slot [role="button"] svg {
+  display: block !important;
+  width: 18px !important;
+  height: 18px !important;
+  flex: 0 0 18px !important;
 }
 
 .keep-signed-row {
