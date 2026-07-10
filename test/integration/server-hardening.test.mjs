@@ -77,6 +77,11 @@ after(async () => {
   }
 });
 
+test("startup logs do not expose presenter credentials", () => {
+  assert.doesNotMatch(serverOutput, new RegExp(TEST_EMAIL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  assert.doesNotMatch(serverOutput, new RegExp(TEST_PASSWORD.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
 test("all HTML responses include the security header baseline", async () => {
   const response = await fetch(`${baseUrl}/`);
   assert.equal(response.status, 200);
