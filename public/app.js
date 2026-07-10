@@ -312,7 +312,9 @@ document.addEventListener("keydown", (event) => {
   }
   event.preventDefault();
   const direction = event.key === "ArrowDown" ? 1 : -1;
-  const nextIndex = (currentIndex + direction + items.length) % items.length;
+  const nextIndex = currentIndex === -1
+    ? (direction === 1 ? 0 : items.length - 1)
+    : (currentIndex + direction + items.length) % items.length;
   items[nextIndex]?.focus();
 });
 
@@ -1233,7 +1235,8 @@ function renderPlayerAnswerStage(remote) {
 function renderLiveQuestion(remote, isHost) {
   const question = remote.currentQuestion;
   const selectedOptionId = remote.selectedOptionId;
-  const answerTotal = Math.max(1, Object.values(remote.answerCounts ?? {}).reduce((sum, count) => sum + count, 0));
+  const answerTotal = Math.max(0, Number(remote.answerCount) || 0);
+  const answerProgressMaximum = Math.max(1, answerTotal);
   const canAnswer = !isHost && isAnswerEntryOpen(remote) && !selectedOptionId;
   const showResults = remote.phase === "results" || remote.phase === "ended";
 
@@ -1256,7 +1259,7 @@ function renderLiveQuestion(remote, isHost) {
               <button type="button" class="answer-button ${isSelected ? "is-selected" : ""} ${isCorrect ? "is-correct" : ""} ${isWrong ? "is-wrong" : ""}" data-tone="${OPTION_TONES[index] ?? "red"}" data-action="answer" data-option-id="${option.id}" ${canAnswer ? "" : "disabled"}>
                 <span class="answer-shape" data-shape="${OPTION_SHAPES[index] ?? "circle"}" aria-hidden="true"></span>
                 <strong>${escapeHtml(option.text)}</strong>
-                ${isHost || remote.phase === "results" ? `${renderCount(count, `option:${remote.pin}:${question.id}:${option.id}`, "answer-count")}<progress class="answer-progress" value="${count}" max="${answerTotal}" aria-label="${count} of ${answerTotal} answers"></progress>` : ""}
+                ${isHost || remote.phase === "results" ? `${renderCount(count, `option:${remote.pin}:${question.id}:${option.id}`, "answer-count")}<progress class="answer-progress" value="${count}" max="${answerProgressMaximum}" aria-label="${count} of ${answerTotal} answers"></progress>` : ""}
               </button>
             `;
           }).join("")}
@@ -1525,11 +1528,13 @@ async function restorePresenterIfPossible() {
 
   try {
     state.presenterLoading = true;
-    await loadPresenterHome();
+    const restored = await loadPresenterHome();
+    if (!restored) {
+      return;
+    }
     if (!(await openPendingPresentationIfNeeded()) && isPresentationLoginPath()) {
       updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
     }
-    render();
   } catch (error) {
     const pendingPresentationId = state.pendingPresentationId
       || sessionStorage.getItem(STORAGE_KEYS.pendingPresentationId)
@@ -1541,16 +1546,20 @@ async function restorePresenterIfPossible() {
     }
     state.notice = "Sign in again to load your presentations.";
     updateBrowserUrl(PRESENTATION_LOGIN_PATH, { replace: true });
-    render();
   } finally {
     state.presenterLoading = false;
+    render();
   }
 }
 
 async function loadPresenterHome() {
   const me = await getJson("/api/me", true);
+  if (!me.presenter || typeof me.csrfToken !== "string" || !me.csrfToken) {
+    return false;
+  }
   acceptPresenterSession(me.presenter, me.csrfToken);
   await loadPresentations();
+  return true;
 }
 
 async function openPendingPresentationIfNeeded() {
@@ -2033,7 +2042,13 @@ async function playAgain() {
 async function leavePlayerSession() {
   const pin = state.remote?.pin || state.playerPin;
   if (pin) {
-    await postJson(`/api/sessions/${encodeURIComponent(pin)}/leave`, {});
+    try {
+      await postJson(`/api/sessions/${encodeURIComponent(pin)}/leave`, {});
+    } catch (error) {
+      if (error?.status !== 401 && error?.status !== 404) {
+        throw error;
+      }
+    }
   }
   if (state.eventSource) {
     state.eventSource.close();

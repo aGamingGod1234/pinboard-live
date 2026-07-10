@@ -31,6 +31,7 @@ before(async () => {
       PRESENTER_PASSWORD: TEST_PASSWORD,
       DATABASE_URL: "",
       PUBLIC_ORIGIN: baseUrl,
+      MAX_PLAYERS_PER_SESSION: "1",
       ALLOW_INSECURE_LOCAL_AUTH: "true"
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -183,6 +184,37 @@ test("cookie-authenticated session lifecycle is durable across SSE disconnects",
     Origin: baseUrl
   });
   assert.equal(resumeAfterLeave.status, 401);
+
+  const legacyResumeAfterLeave = await postJson(`/api/sessions/${pin}/resume`, {
+    legacyPlayerId: joined.playerId
+  }, { Origin: baseUrl });
+  assert.equal(legacyResumeAfterLeave.status, 401);
+
+  const nicknameReuseResponse = await postJson(`/api/sessions/${pin}/join`, { nickname: "Cookie Player" }, {
+    Origin: baseUrl
+  });
+  assert.equal(nicknameReuseResponse.status, 201);
+  const nicknameReuse = await nicknameReuseResponse.json();
+  assert.notEqual(nicknameReuse.playerId, joined.playerId);
+  assert.equal(nicknameReuse.session.playerCount, 1);
+  const nicknameReuseCookie = cookiePair(nicknameReuseResponse.headers.get("set-cookie") ?? "");
+
+  const secondLeaveResponse = await postJson(`/api/sessions/${pin}/leave`, {}, {
+    Cookie: nicknameReuseCookie,
+    Origin: baseUrl
+  });
+  assert.equal(secondLeaveResponse.status, 200);
+
+  const replacementResponse = await postJson(`/api/sessions/${pin}/join`, { nickname: "Replacement Player" }, {
+    Origin: baseUrl
+  });
+  assert.equal(replacementResponse.status, 201);
+  const replacement = await replacementResponse.json();
+  assert.equal(replacement.session.playerCount, 1);
+  const replacementHostStream = await openEventStream(hostEventsUrl, presenter.cookie);
+  assert.equal(replacementHostStream.state.playerCount, 1);
+  assert.deepEqual(replacementHostStream.state.recentPlayers.map((player) => player.nickname), ["Replacement Player"]);
+  await closeEventStream(replacementHostStream);
 
   const guardedEndResponse = await postJson(`/api/sessions/${pin}/end`, {}, presenterMutationHeaders(presenter));
   assert.equal(guardedEndResponse.status, 409);

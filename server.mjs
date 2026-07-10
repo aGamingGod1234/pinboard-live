@@ -13,6 +13,7 @@ import {
   detectMediaMimeType,
   isStrictStableId,
   isTrustedOrigin,
+  shouldPersistPresenterSession,
   validateMediaDataUrl,
   validateBodyByteLength,
   validateContentLength
@@ -138,7 +139,7 @@ const { Pool } = pg;
 /** @typedef {{ id: string, text: string }} Option */
 /** @typedef {{ id: string, name: string, type: string, size: number, url: string }} MediaAsset */
 /** @typedef {{ id: string, kind: QuestionKind, text: string, points: number, timerSeconds: number, options: Option[], correctOptionId: string | null, media: MediaAsset | null }} Question */
-/** @typedef {{ id: string, nickname: string, score: number, joinedAt: number, connected: boolean, lastSeenAt: number, resumeTokenHash: string }} Player */
+/** @typedef {{ id: string, nickname: string, score: number, joinedAt: number, connected: boolean, lastSeenAt: number, resumeTokenHash: string, leftAt: number | null }} Player */
 /** @typedef {{ optionId: string, answeredAt: number }} Answer */
 /** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, playerTokenHash: string | null, presenterTokenHash: string | null, heartbeat: NodeJS.Timeout | null, backpressured: boolean, pendingStatePayload: string | null, pendingAnswerPayload: string | null, drainHandler: (() => void) | null }} Client */
 /** @typedef {{ id: string, email: string, name: string, passwordHash: string, googleSub?: string | null }} Presenter */
@@ -531,7 +532,7 @@ async function handleAuth(request, response) {
     throw new HttpError(401, "Email or password is not valid.");
   }
 
-  await establishPresenterSession(response, presenter, body.keepSignedIn === true);
+  await establishPresenterSession(response, presenter, shouldPersistPresenterSession(body.keepSignedIn));
 }
 
 async function handleGoogleAuthStart(request, response) {
@@ -587,7 +588,7 @@ async function handleGoogleCredentialAuth(request, response) {
   const profile = await verifyGoogleCredentialToken(credential);
   const presenter = await findOrCreateGooglePresenter(profile);
 
-  await establishPresenterSession(response, presenter, true);
+  await establishPresenterSession(response, presenter, shouldPersistPresenterSession(body.keepSignedIn));
 }
 
 async function handleCurrentPresenter(request, response) {
@@ -905,14 +906,15 @@ async function handleSessionActionLocked({ action, body, pin, playerTokenHash, p
 async function handleJoin(body, session) {
   assertPresenterOnline(session);
   const nickname = limitText(readString(body.nickname, "Nickname"), MAX_NICKNAME_LENGTH, "Nickname");
-  const existingPlayer = [...session.players.values()].find(
+  const activePlayers = [...session.players.values()].filter(isActivePlayer);
+  const existingPlayer = activePlayers.find(
     (player) => player.nickname.toLocaleLowerCase() === nickname.toLocaleLowerCase()
   );
   const resumeToken = createPlayerResumeToken();
   if (existingPlayer) {
     throw new HttpError(409, "That nickname is already in use.", "NICKNAME_TAKEN");
   }
-  if (session.players.size >= MAX_PLAYERS_PER_SESSION) {
+  if (activePlayers.length >= MAX_PLAYERS_PER_SESSION) {
     throw new HttpError(409, "This session has reached its player limit.", "SESSION_PLAYER_LIMIT");
   }
   const player = {
@@ -922,7 +924,8 @@ async function handleJoin(body, session) {
     joinedAt: Date.now(),
     connected: true,
     lastSeenAt: Date.now(),
-    resumeTokenHash: hashSecret(resumeToken)
+    resumeTokenHash: hashSecret(resumeToken),
+    leftAt: null
   };
 
   if (!player.nickname) {
@@ -948,7 +951,7 @@ async function handleResume(body, playerTokenHash, session) {
   } catch (error) {
     const legacyPlayerId = typeof body.legacyPlayerId === "string" ? body.legacyPlayerId : "";
     const legacyPlayer = isStrictStableId(legacyPlayerId) ? session.players.get(legacyPlayerId) : null;
-    if (!(error instanceof HttpError) || error.statusCode !== 401 || !legacyPlayer || legacyPlayer.resumeTokenHash) {
+    if (!(error instanceof HttpError) || error.statusCode !== 401 || !legacyPlayer || legacyPlayer.resumeTokenHash || !isActivePlayer(legacyPlayer)) {
       throw error;
     }
     migratedResumeToken = createPlayerResumeToken();
@@ -1060,7 +1063,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
 
     const playerResult = await client.query(
       `SELECT id FROM live_session_players
-       WHERE pin = $1 AND resume_token_hash = $2`,
+       WHERE pin = $1 AND resume_token_hash = $2 AND left_at IS NULL`,
       [pin, playerTokenHash]
     );
     const playerId = playerResult.rows[0]?.id;
@@ -1163,9 +1166,11 @@ function applyCompactAnswerUpdate(event) {
 
 async function handleLeave(playerTokenHash, session) {
   const player = requireSessionPlayerByTokenHash(playerTokenHash, session);
-  applySessionState(session, setPlayerPresence(session, { playerId: player.id, connected: false, now: Date.now() }));
+  const leftAt = Date.now();
+  applySessionState(session, setPlayerPresence(session, { playerId: player.id, connected: false, now: leftAt }));
   const updatedPlayer = session.players.get(player.id);
   updatedPlayer.resumeTokenHash = "";
+  updatedPlayer.leftAt = leftAt;
   await persistPlayerPresence(session, updatedPlayer);
   afterSessionCommit(() => {
     for (const client of [...session.clients.values()]) {
@@ -1608,7 +1613,7 @@ function readSessionPlayerTokenHash(request, pin) {
 
 function requireSessionPlayerByTokenHash(resumeTokenHash, session) {
   const player = resumeTokenHash
-    ? [...session.players.values()].find((candidate) => candidate.resumeTokenHash === resumeTokenHash)
+    ? [...session.players.values()].find((candidate) => isActivePlayer(candidate) && candidate.resumeTokenHash === resumeTokenHash)
     : null;
   if (!player) {
     throw new HttpError(401, "Player resume authentication is not valid.", "PLAYER_AUTHENTICATION_INVALID");
@@ -1855,6 +1860,7 @@ function evictSessionClient(session, client) {
 function getStateForRole(session, role, playerId) {
   const question = getCurrentQuestion(session);
   const player = playerId ? session.players.get(playerId) : null;
+  const activePlayers = [...session.players.values()].filter(isActivePlayer);
   const showAnswers = role === "host" || session.phase === "results" || session.phase === "ended";
 
   return {
@@ -1864,7 +1870,7 @@ function getStateForRole(session, role, playerId) {
     phase: session.phase,
     currentQuestionIndex: session.currentQuestionIndex,
     questionCount: session.questions.length,
-    playerCount: session.players.size,
+    playerCount: activePlayers.length,
     answerCount: session.answers.size,
     openedAt: session.openedAt,
     currentQuestion: question ? serializeQuestion(question, showAnswers, session.pin) : null,
@@ -1920,12 +1926,17 @@ function buildLeaderboard(session) {
 
 function buildRecentPlayers(session) {
   return [...session.players.values()]
+    .filter(isActivePlayer)
     .sort((left, right) => right.joinedAt - left.joinedAt)
     .slice(0, RECENT_PLAYER_LIMIT)
     .map((player) => ({
       nickname: player.nickname,
       score: player.score
     }));
+}
+
+function isActivePlayer(player) {
+  return player?.leftAt == null;
 }
 
 function getCurrentQuestion(session) {
@@ -2384,6 +2395,7 @@ async function authorizeMediaRequest(request, asset) {
        JOIN live_sessions AS session ON session.pin = player.pin
        WHERE player.pin = $1
          AND player.resume_token_hash = $2
+         AND player.left_at IS NULL
          AND EXISTS (
            SELECT 1
            FROM jsonb_array_elements(COALESCE(session.snapshot -> 'questions', '[]'::jsonb)) AS question
@@ -2745,9 +2757,11 @@ async function initializeDatabase() {
       connected BOOLEAN NOT NULL DEFAULT FALSE,
       last_seen_at BIGINT NOT NULL,
       resume_token_hash TEXT NOT NULL DEFAULT '',
+      left_at BIGINT,
       PRIMARY KEY (pin, id)
     )
   `);
+  await database.query("ALTER TABLE live_session_players ADD COLUMN IF NOT EXISTS left_at BIGINT");
   await database.query("CREATE INDEX IF NOT EXISTS live_session_players_pin_score_idx ON live_session_players (pin, score DESC)");
   await database.query(
     "CREATE INDEX IF NOT EXISTS live_session_players_pin_resume_idx ON live_session_players (pin, resume_token_hash) WHERE resume_token_hash <> ''"
@@ -3487,9 +3501,9 @@ async function persistPlayerPresence(session, player) {
   }
   await getSessionQueryable().query(
     `UPDATE live_session_players
-     SET connected = $3, last_seen_at = $4, resume_token_hash = $5
+     SET connected = $3, last_seen_at = $4, resume_token_hash = $5, left_at = $6
      WHERE pin = $1 AND id = $2`,
-    [session.pin, player.id, player.connected === true, player.lastSeenAt, player.resumeTokenHash]
+    [session.pin, player.id, player.connected === true, player.lastSeenAt, player.resumeTokenHash, player.leftAt]
   );
 }
 
@@ -3501,15 +3515,16 @@ async function persistPlayers(session) {
   const players = [...session.players.values()];
   await getSessionQueryable().query(
     `INSERT INTO live_session_players
-       (pin, id, nickname, score, joined_at, connected, last_seen_at, resume_token_hash)
+       (pin, id, nickname, score, joined_at, connected, last_seen_at, resume_token_hash, left_at)
      SELECT $1, *
-     FROM UNNEST($2::uuid[], $3::text[], $4::integer[], $5::bigint[], $6::boolean[], $7::bigint[], $8::text[])
+     FROM UNNEST($2::uuid[], $3::text[], $4::integer[], $5::bigint[], $6::boolean[], $7::bigint[], $8::text[], $9::bigint[])
      ON CONFLICT (pin, id) DO UPDATE SET
        nickname = EXCLUDED.nickname,
        score = EXCLUDED.score,
        connected = EXCLUDED.connected,
        last_seen_at = EXCLUDED.last_seen_at,
-       resume_token_hash = EXCLUDED.resume_token_hash`,
+       resume_token_hash = EXCLUDED.resume_token_hash,
+       left_at = EXCLUDED.left_at`,
     [
       session.pin,
       players.map((player) => player.id),
@@ -3518,7 +3533,8 @@ async function persistPlayers(session) {
       players.map((player) => player.joinedAt),
       players.map((player) => player.connected === true),
       players.map((player) => player.lastSeenAt),
-      players.map((player) => player.resumeTokenHash)
+      players.map((player) => player.resumeTokenHash),
+      players.map((player) => player.leftAt)
     ]
   );
 }
@@ -3526,15 +3542,16 @@ async function persistPlayers(session) {
 async function upsertPlayerRecord(queryable, pin, player) {
   await queryable.query(
     `INSERT INTO live_session_players
-       (pin, id, nickname, score, joined_at, connected, last_seen_at, resume_token_hash)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (pin, id, nickname, score, joined_at, connected, last_seen_at, resume_token_hash, left_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (pin, id) DO UPDATE SET
        nickname = EXCLUDED.nickname,
        score = EXCLUDED.score,
        connected = EXCLUDED.connected,
        last_seen_at = EXCLUDED.last_seen_at,
-       resume_token_hash = EXCLUDED.resume_token_hash`,
-    [pin, player.id, player.nickname, player.score, player.joinedAt, player.connected === true, player.lastSeenAt, player.resumeTokenHash]
+       resume_token_hash = EXCLUDED.resume_token_hash,
+       left_at = EXCLUDED.left_at`,
+    [pin, player.id, player.nickname, player.score, player.joinedAt, player.connected === true, player.lastSeenAt, player.resumeTokenHash, player.leftAt ?? null]
   );
 }
 
@@ -3745,7 +3762,7 @@ async function loadPersistedSession(pin, options = {}) {
   }
 
   const playersResult = await queryable.query(
-    `SELECT id, nickname, score, joined_at, connected, last_seen_at, resume_token_hash
+    `SELECT id, nickname, score, joined_at, connected, last_seen_at, resume_token_hash, left_at
      FROM live_session_players WHERE pin = $1`,
     [pin]
   );
@@ -3807,7 +3824,8 @@ function hydrateSessionSnapshot(snapshot, clients, version = 0, playerRows = [],
     joined_at: player?.joinedAt,
     connected: player?.connected,
     last_seen_at: player?.lastSeenAt,
-    resume_token_hash: player?.resumeTokenHash
+    resume_token_hash: player?.resumeTokenHash,
+    left_at: player?.leftAt
   }));
   const players = new Map((playerRows.length > 0 ? playerRows : legacyPlayers).map((player) => [player.id, {
     id: player.id,
@@ -3816,7 +3834,8 @@ function hydrateSessionSnapshot(snapshot, clients, version = 0, playerRows = [],
     joinedAt: Number(player.joined_at ?? Date.now()),
     connected: player.connected === true,
     lastSeenAt: Number(player.last_seen_at ?? player.joined_at ?? Date.now()),
-    resumeTokenHash: typeof player.resume_token_hash === "string" ? player.resume_token_hash : ""
+    resumeTokenHash: typeof player.resume_token_hash === "string" ? player.resume_token_hash : "",
+    leftAt: player.left_at == null ? null : Number(player.left_at)
   }]));
   const legacyAnswers = (snapshot.answers ?? []).map(([playerId, answer]) => ({
     player_id: playerId,
@@ -4058,13 +4077,17 @@ function getRequestPrincipalKey(request, url) {
 
 function getClientAddress(request) {
   if (TRUST_PROXY) {
+    const realIp = String(request.headers["x-real-ip"] ?? "").trim();
+    if (realIp) {
+      return realIp.slice(0, 128);
+    }
     const forwarded = request.headers["x-forwarded-for"];
     const values = (Array.isArray(forwarded) ? forwarded.join(",") : String(forwarded ?? ""))
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean);
     if (values.length > 0) {
-      return values.at(-1).slice(0, 128);
+      return values[0].slice(0, 128);
     }
   }
   return (request.socket.remoteAddress || "unknown").slice(0, 128);

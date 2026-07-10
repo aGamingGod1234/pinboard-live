@@ -252,6 +252,10 @@ export function isTrustedOrigin(origin, trustedOrigins, { allowMissing = false }
   return normalizedTrustedOrigins.has(normalizedOrigin);
 }
 
+export function shouldPersistPresenterSession(value) {
+  return value === true;
+}
+
 export function createTokenBucketLimiter({
   capacity,
   refillTokens = DEFAULT_REFILL_TOKENS,
@@ -286,7 +290,9 @@ export function createTokenBucketLimiter({
     }
 
     if (!bucket) {
-      pruneIdleBuckets(buckets, timestamp, safeIdleTtlMs);
+      if (buckets.size >= safeMaxEntries) {
+        pruneIdleBuckets(buckets, timestamp, safeIdleTtlMs);
+      }
       if (buckets.size >= safeMaxEntries) {
         return limiterCapacityResult(buckets, timestamp, safeIdleTtlMs, safeCapacity);
       }

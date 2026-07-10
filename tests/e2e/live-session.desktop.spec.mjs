@@ -15,6 +15,7 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
 
   try {
     await page.goto("/presentation/login");
+    await expect(page.getByText("Sign in again to load your presentations.", { exact: true })).toHaveCount(0);
     await page.getByLabel("Email", { exact: true }).fill("e2e@example.test");
     await page.getByLabel("Password", { exact: true }).fill("incorrect-password");
     await page.getByRole("button", { name: /^Sign in(?: with email)?$/i }).click();
@@ -55,6 +56,7 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     await expect(page.getByText("1 participant joined", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Start", exact: true }).click();
+    await expect(page.locator(".answer-progress").first()).toHaveAttribute("aria-label", "0 of 0 answers");
 
     const firstAnswer = playerPage.getByRole("button", {
       name: "Option 1, red triangle: First choice",
@@ -88,8 +90,12 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     await expect(page.getByRole("button", { name: "Return to projects", exact: true })).toBeVisible();
     await expect(playerPage.getByRole("button", { name: "Leave", exact: true })).toBeVisible();
 
+    await playerContext.clearCookies();
     await playerPage.getByRole("button", { name: "Leave", exact: true }).click();
     await expect(playerPage.getByRole("button", { name: "Enter", exact: true })).toBeVisible();
+    const expectedUnauthorizedRequest = playerErrors.findIndex((error) => error.includes("status of 401"));
+    expect(expectedUnauthorizedRequest).toBeGreaterThanOrEqual(0);
+    playerErrors.splice(expectedUnauthorizedRequest, 1);
 
     await page.getByRole("button", { name: "Play again", exact: true }).click();
     const replayPinBlock = page.getByText(/Game PIN:\s*\d{3}\s*\d{3}/).first();
@@ -108,6 +114,13 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     await expect(page.getByRole("menuitem", { name: "Rename" })).toBeFocused();
     await page.keyboard.press("ArrowDown");
     await expect(page.getByRole("menuitem", { name: "Duplicate" })).toBeFocused();
+    const actionsMenu = page.getByRole("menu", { name: "Presentation actions" });
+    await actionsMenu.evaluate((menu) => {
+      menu.tabIndex = -1;
+      menu.focus();
+    });
+    await page.keyboard.press("ArrowUp");
+    await expect(page.getByRole("menuitem", { name: "Delete" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(actionsButton).toBeFocused();
 

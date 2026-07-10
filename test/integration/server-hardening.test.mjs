@@ -1,11 +1,31 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { createServer as createNetServer } from "node:net";
 import { after, before, test } from "node:test";
 
 const TEST_EMAIL = "hardening@example.test";
 const TEST_PASSWORD = "hardening-password-123";
+const GOOGLE_TEST_CLIENT_ID = "hardening-google-client";
+const GOOGLE_TEST_EMAIL = "google-hardening@example.test";
+const GOOGLE_TEST_KID = "hardening-google-key";
 const JSON_HEADERS = { "Content-Type": "application/json" };
+const { publicKey: googlePublicKey, privateKey: googlePrivateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const googleTestJwk = googlePublicKey.export({ format: "jwk" });
+Object.assign(googleTestJwk, { kid: GOOGLE_TEST_KID, alg: "RS256", use: "sig" });
+const googleFetchPreloadSource = `
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = typeof input === "string" ? input : input.url;
+  if (url === "https://www.googleapis.com/oauth2/v3/certs") {
+    return new Response(JSON.stringify({ keys: [JSON.parse(process.env.MOCK_GOOGLE_JWK)] }), {
+      status: 200,
+      headers: { "content-type": "application/json", "cache-control": "max-age=3600" }
+    });
+  }
+  return originalFetch(input, init);
+};`;
+const googleFetchPreload = `data:text/javascript,${encodeURIComponent(googleFetchPreloadSource)}`;
 
 let baseUrl;
 let serverProcess;
@@ -14,7 +34,7 @@ let serverOutput = "";
 before(async () => {
   const port = await getAvailablePort();
   baseUrl = `http://127.0.0.1:${port}`;
-  serverProcess = spawn(process.execPath, ["server.mjs"], {
+  serverProcess = spawn(process.execPath, ["--import", googleFetchPreload, "server.mjs"], {
     cwd: new URL("../..", import.meta.url),
     env: {
       ...process.env,
@@ -24,8 +44,12 @@ before(async () => {
       AUTH_SECRET: "hardening-test-secret-with-more-than-thirty-two-characters",
       PRESENTER_EMAIL: TEST_EMAIL,
       PRESENTER_PASSWORD: TEST_PASSWORD,
+      GOOGLE_CLIENT_ID: GOOGLE_TEST_CLIENT_ID,
+      GOOGLE_ALLOWED_EMAILS: GOOGLE_TEST_EMAIL,
+      MOCK_GOOGLE_JWK: JSON.stringify(googleTestJwk),
       DATABASE_URL: "",
       PUBLIC_ORIGIN: baseUrl,
+      TRUST_PROXY: "true",
       ALLOW_INSECURE_LOCAL_AUTH: "true"
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -92,6 +116,25 @@ test("anonymous presenter restoration is a quiet cache-safe response", async () 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("cache-control") ?? "", /no-store/);
   assert.deepEqual(await response.json(), { presenter: null, csrfToken: null });
+});
+
+test("Google credential login honors the requested cookie persistence", async () => {
+  const sessionOnly = await postJson("/api/auth/google", {
+    credential: createGoogleTestCredential(),
+    keepSignedIn: false
+  }, { Origin: baseUrl });
+  assert.equal(sessionOnly.status, 200);
+  const sessionCookie = sessionOnly.headers.get("set-cookie") ?? "";
+  assert.match(sessionCookie, /pinboard_presenter=/);
+  assert.doesNotMatch(sessionCookie, /(?:^|;\s*)Max-Age=/i);
+  assert.doesNotMatch(sessionCookie, /(?:^|;\s*)Expires=/i);
+
+  const persistent = await postJson("/api/auth/google", {
+    credential: createGoogleTestCredential(),
+    keepSignedIn: true
+  }, { Origin: baseUrl });
+  assert.equal(persistent.status, 200);
+  assert.match(persistent.headers.get("set-cookie") ?? "", /(?:^|;\s*)Max-Age=\d+(?:;|$)/i);
 });
 
 test("ordinary auth JSON is rejected before buffering media-sized bodies", async () => {
@@ -194,6 +237,23 @@ test("media is signature-validated, stored separately, and supports byte ranges"
   assert.equal(activeContent.status, 415);
 });
 
+test("trusted proxy chains rate-limit distinct originating clients independently", async () => {
+  const sharedProxy = "10.0.0.20";
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const response = await fetch(`${baseUrl}/auth/google`, {
+      headers: { "X-Forwarded-For": `198.51.100.10, ${sharedProxy}` },
+      redirect: "manual"
+    });
+    assert.equal(response.status, 503);
+  }
+
+  const differentClient = await fetch(`${baseUrl}/auth/google`, {
+    headers: { "X-Forwarded-For": `198.51.100.11, ${sharedProxy}` },
+    redirect: "manual"
+  });
+  assert.equal(differentClient.status, 503);
+});
+
 async function loginPresenter() {
   const response = await postJson("/api/auth", {
     email: TEST_EMAIL,
@@ -206,6 +266,23 @@ async function loginPresenter() {
     cookie: (response.headers.get("set-cookie") ?? "").split(";")[0],
     csrfToken: body.csrfToken
   };
+}
+
+function createGoogleTestCredential() {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const header = encode({ alg: "RS256", kid: GOOGLE_TEST_KID, typ: "JWT" });
+  const payload = encode({
+    iss: "accounts.google.com",
+    aud: GOOGLE_TEST_CLIENT_ID,
+    exp: Math.floor(Date.now() / 1000) + 300,
+    sub: "hardening-google-sub",
+    email: GOOGLE_TEST_EMAIL,
+    email_verified: true,
+    name: "Google Hardening"
+  });
+  const signingInput = `${header}.${payload}`;
+  const signature = sign("RSA-SHA256", Buffer.from(signingInput), googlePrivateKey).toString("base64url");
+  return `${signingInput}.${signature}`;
 }
 
 function postJson(pathname, body, extraHeaders = {}) {
