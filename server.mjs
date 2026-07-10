@@ -333,7 +333,9 @@ async function handleSessionEventNotification(notification) {
     if (!Number.isSafeInteger(event.version)
       || !Number.isSafeInteger(event.questionIndex)
       || !isStrictStableId(event.playerId)
-      || !isStrictStableId(event.optionId)
+      || !Array.isArray(event.selectedOptionIds)
+      || event.selectedOptionIds.length === 0
+      || event.selectedOptionIds.some((id) => !isStrictStableId(id))
       || !Number.isFinite(event.answeredAt)) {
       return;
     }
@@ -968,10 +970,23 @@ async function handleResume(body, playerTokenHash, session) {
   });
 }
 
+function normalizeSubmittedOptionIds(body, question) {
+  const source = Array.isArray(body.selectedOptionIds)
+    ? body.selectedOptionIds
+    : typeof body.optionId === "string" ? [body.optionId] : [];
+  const selectedOptionIds = source.map((id, index) => readString(id, `Selected option ${index + 1}`));
+  const uniqueIds = [...new Set(selectedOptionIds)];
+  const validIds = new Set(question?.options?.map((option) => option.id) ?? []);
+  const requiredCount = question?.correctOptionIds?.length ?? 1;
+  if (uniqueIds.length !== requiredCount || uniqueIds.length !== selectedOptionIds.length || uniqueIds.some((id) => !validIds.has(id))) {
+    throw new HttpError(400, `Select exactly ${requiredCount} answer${requiredCount === 1 ? "" : "s"}.`, "INVALID_SELECTION");
+  }
+  return uniqueIds;
+}
+
 async function handleAnswer(body, playerTokenHash, session) {
   const player = requireSessionPlayerByTokenHash(playerTokenHash, session);
   const playerId = player.id;
-  const optionId = readString(body.optionId, "Option ID");
   const question = getCurrentQuestion(session);
 
   if (session.phase !== "answering" && session.phase !== "question") {
@@ -982,9 +997,7 @@ async function handleAnswer(body, playerTokenHash, session) {
     throw new HttpError(409, "This slide does not accept answers.");
   }
 
-  if (!question.options.some((option) => option.id === optionId)) {
-    throw new HttpError(400, "Selected option does not exist.");
-  }
+  const selectedOptionIds = normalizeSubmittedOptionIds(body, question);
 
   const phaseChanged = session.phase === "question";
   if (phaseChanged) {
@@ -993,7 +1006,7 @@ async function handleAnswer(body, playerTokenHash, session) {
     scheduleQuestionTimer(session);
   }
 
-  const result = recordAnswer(session, { playerId, optionId, now: Date.now() });
+  const result = recordAnswer(session, { playerId, selectedOptionIds, now: Date.now() });
   applySessionState(session, result.session);
 
   if (result.outcome.duplicate) {
@@ -1022,7 +1035,6 @@ async function handleAnswer(body, playerTokenHash, session) {
 }
 
 async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
-  const optionId = readString(body.optionId, "Option ID");
   const client = await database.connect();
   let transactionFinished = false;
   try {
@@ -1047,9 +1059,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
     if (snapshot.phase !== "answering" || !question || question.kind === "slide") {
       throw new HttpError(409, "Answers are not open.");
     }
-    if (!question.options.some((option) => option.id === optionId)) {
-      throw new HttpError(400, "Selected option does not exist.");
-    }
+    const selectedOptionIds = normalizeSubmittedOptionIds(body, question);
     const now = Date.now();
     const validation = recordAnswer({
       questions: snapshot.questions,
@@ -1057,7 +1067,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
       phase: snapshot.phase,
       openedAt: snapshot.openedAt,
       answers: new Map()
-    }, { playerId: "validation", optionId, now });
+    }, { playerId: "validation", selectedOptionIds, now });
     if (!validation.outcome.accepted) {
       throw new HttpError(409, "Answers are closed for this question.", "ANSWER_CLOSED");
     }
@@ -1072,22 +1082,22 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
       throw new HttpError(401, "Player resume authentication is not valid.", "PLAYER_AUTHENTICATION_INVALID");
     }
     const inserted = await client.query(
-      `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, answered_at)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, selected_option_ids, answered_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)
        ON CONFLICT (pin, question_index, player_id) DO NOTHING
-       RETURNING option_id, answered_at`,
-      [pin, questionIndex, playerId, optionId, now]
+       RETURNING option_id, selected_option_ids, answered_at`,
+      [pin, questionIndex, playerId, selectedOptionIds[0], JSON.stringify(selectedOptionIds), now]
     );
-    let selectedOptionId = optionId;
+    let persistedSelectedOptionIds = selectedOptionIds;
     let answeredAt = now;
     const accepted = inserted.rowCount > 0;
     if (!accepted) {
       const existing = await client.query(
-        `SELECT option_id, answered_at FROM live_session_answers
+        `SELECT option_id, selected_option_ids, answered_at FROM live_session_answers
          WHERE pin = $1 AND question_index = $2 AND player_id = $3`,
         [pin, questionIndex, playerId]
       );
-      selectedOptionId = existing.rows[0]?.option_id ?? optionId;
+      persistedSelectedOptionIds = normalizePersistedSelectedOptionIds(existing.rows[0] ?? { option_id: selectedOptionIds[0] });
       answeredAt = Number(existing.rows[0]?.answered_at ?? now);
     } else {
       await client.query("SELECT pg_notify($1, $2)", [
@@ -1099,7 +1109,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
           version: Number(record.version),
           questionIndex,
           playerId,
-          optionId,
+          selectedOptionIds,
           answeredAt
         })
       ]);
@@ -1113,7 +1123,7 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
           version: Number(record.version),
           questionIndex,
           playerId,
-          optionId,
+          selectedOptionIds,
           answeredAt
         });
       } catch (error) {
@@ -1125,7 +1135,8 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
       payload: {
         accepted,
         duplicate: !accepted,
-        selectedOptionId,
+        selectedOptionIds: persistedSelectedOptionIds,
+        selectedOptionId: persistedSelectedOptionIds[0] ?? null,
         version: Number(record.version)
       }
     };
@@ -1147,7 +1158,7 @@ function applyCompactAnswerUpdate(event) {
     || session.answers.has(event.playerId)) {
     return;
   }
-  session.answers.set(event.playerId, { optionId: event.optionId, answeredAt: event.answeredAt });
+  session.answers.set(event.playerId, { selectedOptionIds: event.selectedOptionIds, answeredAt: event.answeredAt });
   for (const client of [...session.clients.values()]) {
     if (client.role === "host") {
       writeSessionEvent(session, client, `event: answer\ndata: ${JSON.stringify({
@@ -1159,7 +1170,8 @@ function applyCompactAnswerUpdate(event) {
       writeSessionEvent(session, client, `event: answer\ndata: ${JSON.stringify({
           pin: session.pin,
           version: session.version,
-          selectedOptionId: event.optionId
+          selectedOptionIds: event.selectedOptionIds,
+          selectedOptionId: event.selectedOptionIds[0] ?? null
       })}\n\n`, { kind: "answer" });
     }
   }
@@ -2786,10 +2798,15 @@ async function initializeDatabase() {
       question_index INTEGER NOT NULL,
       player_id UUID NOT NULL,
       option_id TEXT NOT NULL,
+      selected_option_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
       answered_at BIGINT NOT NULL,
       PRIMARY KEY (pin, question_index, player_id)
     )
   `);
+  await database.query("ALTER TABLE live_session_answers ADD COLUMN IF NOT EXISTS selected_option_ids JSONB NOT NULL DEFAULT '[]'::jsonb");
+  await database.query(`UPDATE live_session_answers
+    SET selected_option_ids = jsonb_build_array(option_id)
+    WHERE jsonb_array_length(selected_option_ids) = 0`);
   await database.query("CREATE INDEX IF NOT EXISTS live_session_answers_pin_question_idx ON live_session_answers (pin, question_index)");
   await migrateLegacyLiveSessionState();
   await database.query(`
@@ -3575,13 +3592,23 @@ async function persistAnswer(session, playerId, answer) {
     return true;
   }
   const result = await getSessionQueryable().query(
-    `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, answered_at)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, selected_option_ids, answered_at)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6)
      ON CONFLICT (pin, question_index, player_id) DO NOTHING
      RETURNING player_id`,
-    [session.pin, session.currentQuestionIndex, playerId, answer.optionId, answer.answeredAt]
+    [session.pin, session.currentQuestionIndex, playerId, answer.selectedOptionIds[0], JSON.stringify(answer.selectedOptionIds), answer.answeredAt]
   );
   return result.rowCount > 0;
+}
+
+function normalizePersistedSelectedOptionIds(answer) {
+  if (Array.isArray(answer?.selected_option_ids) && answer.selected_option_ids.length > 0) {
+    return answer.selected_option_ids.filter((id) => typeof id === "string");
+  }
+  if (Array.isArray(answer?.selectedOptionIds) && answer.selectedOptionIds.length > 0) {
+    return answer.selectedOptionIds.filter((id) => typeof id === "string");
+  }
+  return typeof answer?.option_id === "string" ? [answer.option_id] : [];
 }
 
 async function getPersistedAnswer(pin, questionIndex, playerId) {
@@ -3589,13 +3616,13 @@ async function getPersistedAnswer(pin, questionIndex, playerId) {
     return null;
   }
   const result = await getSessionQueryable().query(
-    `SELECT option_id, answered_at
+    `SELECT option_id, selected_option_ids, answered_at
      FROM live_session_answers
      WHERE pin = $1 AND question_index = $2 AND player_id = $3`,
     [pin, questionIndex, playerId]
   );
   return result.rows[0] ? {
-    optionId: result.rows[0].option_id,
+    selectedOptionIds: normalizePersistedSelectedOptionIds(result.rows[0]),
     answeredAt: Number(result.rows[0].answered_at)
   } : null;
 }
@@ -3638,10 +3665,10 @@ async function migrateLegacyLiveSessionState() {
           continue;
         }
         await client.query(
-          `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, answered_at)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO live_session_answers (pin, question_index, player_id, option_id, selected_option_ids, answered_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6)
            ON CONFLICT (pin, question_index, player_id) DO NOTHING`,
-          [record.pin, Number(snapshot.currentQuestionIndex ?? -1), playerId, answer.optionId, Number(answer.answeredAt ?? Date.now())]
+          [record.pin, Number(snapshot.currentQuestionIndex ?? -1), playerId, answer.optionId, JSON.stringify([answer.optionId]), Number(answer.answeredAt ?? Date.now())]
         );
       }
       if (normalizedIds.changed || hasEmbeddedState) {
@@ -3781,7 +3808,7 @@ async function loadPersistedSession(pin, options = {}) {
     [pin]
   );
   const answersResult = await queryable.query(
-    `SELECT player_id, option_id, answered_at
+    `SELECT player_id, option_id, selected_option_ids, answered_at
      FROM live_session_answers
      WHERE pin = $1 AND question_index = $2`,
     [pin, Number(result.rows[0].snapshot?.currentQuestionIndex ?? -1)]
@@ -3854,10 +3881,11 @@ function hydrateSessionSnapshot(snapshot, clients, version = 0, playerRows = [],
   const legacyAnswers = (snapshot.answers ?? []).map(([playerId, answer]) => ({
     player_id: playerId,
     option_id: answer?.optionId,
+    selected_option_ids: answer?.selectedOptionIds,
     answered_at: answer?.answeredAt
   }));
   const answers = new Map((answerRows.length > 0 ? answerRows : legacyAnswers).map((answer) => [answer.player_id, {
-    optionId: answer.option_id,
+    selectedOptionIds: normalizePersistedSelectedOptionIds(answer),
     answeredAt: Number(answer.answered_at ?? Date.now())
   }]));
   return {
