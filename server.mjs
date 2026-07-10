@@ -46,6 +46,7 @@ const MAX_TITLE_LENGTH = 120;
 const MAX_PRESENTER_NAME_LENGTH = 120;
 const MAX_QUESTION_TEXT_LENGTH = 120;
 const MAX_OPTION_TEXT_LENGTH = 64;
+const DEFAULT_QUIZ_OPTION_LABELS = ["Red", "Blue", "Gold", "Green"];
 const DEFAULT_TIMER_SECONDS = 30;
 const MIN_TIMER_SECONDS = 5;
 const MAX_TIMER_SECONDS = 300;
@@ -3286,7 +3287,7 @@ function createDuplicatePresentationSnapshot(snapshot) {
 }
 
 function createBlankPresentationSnapshot() {
-  const options = ["Answer 1", "Answer 2", "Answer 3", "Answer 4"].map((text) => ({
+  const options = DEFAULT_QUIZ_OPTION_LABELS.map((text) => ({
     id: randomUUID(),
     text
   }));

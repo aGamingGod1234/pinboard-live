@@ -866,3 +866,35 @@
 - Railway deployment `01344397-65f7-4c83-aac1-91551f2fc2d6` reached `SUCCESS`; the prior revision was removed. Fresh deployment logs contained no runtime errors or presenter identity.
 - Production `/health` returned HTTP 200 with `{ ok: true, database: "postgres" }`.
 - Production browser audit created and deleted a temporary two-question deck, verified six answer options, two correct markers, a results-only presenter graph, the separate leaderboard transition, a centered question image, a partial player outcome worth `+196 points`, and zero horizontal mobile overflow.
+
+## 2026-07-10 — Compact Editor and Presenter Results Layout
+
+### What Was Implemented
+- Compacted the presentation editor header while retaining the primary Save and Host live actions.
+- Removed the editor presentation-link pill, Limits inspector, duplicate bottom launch panel, and excessive bottom scroll padding.
+- Expanded the editor to two columns, aligned Type/Text/Points/Timer controls, and preserved the active editor scroll position after Add answer.
+- Continued the answer theme through Purple and Teal, including color/shape styling and server-created Red/Blue/Gold/Green defaults.
+- Moved the live timer into the right side of the presenter question bar, centered and raised question media, and expanded the answer area.
+- Replaced reveal media and oversized answer cards with a centered, proportional bar chart that keeps all answer colors while emphasizing correct answers.
+- Added responsive host controls and compact mobile result bars without horizontal overflow.
+
+### Files Modified
+- `public/app.js` — compact editor markup, scroll restoration, presenter question bar, and reveal chart structure.
+- `public/client-state.js` — themed Purple/Teal labels for newly added options.
+- `public/styles.css` — two-column editor, aligned fields, presenter media/timer layout, central chart, and mobile overrides.
+- `server.mjs` — themed Red/Blue/Gold/Green defaults for newly created presentations.
+- `test/unit/client-state.test.mjs` — themed option-label regression coverage.
+- `tests/e2e/live-session.desktop.spec.mjs` — editor chrome, alignment, scroll, chart, CSP, and responsive presenter regressions.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- The top Save and Host live actions remain available; only duplicate and informational editor chrome was removed.
+- Answer reveal replaces the question image entirely with the distribution chart.
+- Answer five and six use the existing Purple/star and Teal/hexagon theme.
+
+### Known Issues / Deferred
+- No scoped editor or presenter-layout issues are known after local desktop/mobile verification.
+- The previously documented Google Identity provider propagation issue is unchanged and outside this layout task.
+
+### Suggested Next Steps
+- Recheck the deployed editor and presenter flow after Railway promotes the merged commit.

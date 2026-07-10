@@ -62,6 +62,30 @@ test("quiz editor supports two to six answers, multiple correct toggles, and one
   await loginPresenter(page);
   await page.getByRole("button", { name: /new presentation/i }).click();
 
+  await expect(page.getByRole("link", { name: "Presentation link" })).toHaveCount(0);
+  await expect(page.locator(".creator-inspector")).toHaveCount(0);
+  await expect(page.locator(".creator-launch")).toHaveCount(0);
+  await expect(page.getByText("Ready for live play", { exact: true })).toHaveCount(0);
+  const editorMetrics = await page.evaluate(() => {
+    const topbar = document.querySelector(".editor-topbar");
+    const controls = [
+      document.querySelector(".question-field-type select"),
+      document.querySelector(".question-field-text textarea"),
+      document.querySelector(".question-field-points input"),
+      document.querySelector(".question-field-timer input")
+    ];
+    return {
+      topbarHeight: topbar?.getBoundingClientRect().height ?? 0,
+      controlTops: controls.map((control) => control?.getBoundingClientRect().top ?? 0)
+    };
+  });
+  expect(editorMetrics.topbarHeight).toBeLessThanOrEqual(112);
+  expect(Math.max(...editorMetrics.controlTops) - Math.min(...editorMetrics.controlTops)).toBeLessThanOrEqual(2);
+  await expect(page.getByLabel("Option 1 text", { exact: true })).toHaveValue("Red");
+  await expect(page.getByLabel("Option 2 text", { exact: true })).toHaveValue("Blue");
+  await expect(page.getByLabel("Option 3 text", { exact: true })).toHaveValue("Gold");
+  await expect(page.getByLabel("Option 4 text", { exact: true })).toHaveValue("Green");
+
   const firstCorrect = page.getByLabel(/^Toggle option 1 as correct:/);
   await expect(firstCorrect).toBeChecked();
   await page.getByRole("button", { name: "Remove option 1", exact: true }).click();
@@ -71,9 +95,19 @@ test("quiz editor supports two to six answers, multiple correct toggles, and one
   await expect(page.getByRole("button", { name: /^Remove option/ }).first()).toBeDisabled();
 
   const addAnswer = page.getByRole("button", { name: "Add answer", exact: true });
-  for (let index = 0; index < 4; index += 1) await addAnswer.click();
+  const scrollBeforeAdd = await page.locator("[data-creator-main]").evaluate((editor) => {
+    editor.scrollTop = Math.min(180, editor.scrollHeight - editor.clientHeight);
+    return editor.scrollTop;
+  });
+  await addAnswer.click();
+  await expect.poll(() => page.locator("[data-creator-main]").evaluate((editor) => editor.scrollTop)).toBe(scrollBeforeAdd);
+  for (let index = 0; index < 3; index += 1) await addAnswer.click();
   await expect(page.getByRole("button", { name: /^Remove option/ })).toHaveCount(6);
   await expect(addAnswer).toBeDisabled();
+  await expect(page.getByLabel("Option 5 text", { exact: true })).toHaveValue("Purple");
+  await expect(page.getByLabel("Option 6 text", { exact: true })).toHaveValue("Teal");
+  await expect(page.locator('.option-row[data-tone="purple"]')).toHaveCount(1);
+  await expect(page.locator('.option-row[data-tone="teal"]')).toHaveCount(1);
 
   await page.getByLabel(/^Toggle option 2 as correct:/).check();
   await expect(page.getByText("2 correct answers", { exact: true })).toBeVisible();
@@ -168,9 +202,25 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
 
     await page.getByRole("button", { name: /^(?:Skip timer|Reveal)$/ }).click();
     await expect(page.locator(".answer-distribution-chart")).toBeVisible();
-    await expect(page.locator(".presenter-result-media .media-preview")).toBeVisible();
+    await expect(page.locator(".presenter-result-media")).toHaveCount(0);
+    await expect(page.locator(".answer-distribution-panel")).toBeVisible();
     await expect(page.locator(".answer-result-bar")).toHaveCount(4);
     await expect(page.locator(".answer-result-bar.is-correct")).toContainText("Correct");
+    const chartOffset = await page.locator(".answer-distribution-panel").evaluate((chart) => {
+      const rect = chart.getBoundingClientRect();
+      return Math.abs(rect.left + rect.width / 2 - window.innerWidth / 2);
+    });
+    expect(chartOffset).toBeLessThanOrEqual(2);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileResultMetrics = await page.evaluate(() => ({
+      horizontalOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      stageToolsRight: document.querySelector(".stage-tools")?.getBoundingClientRect().right ?? 0,
+      tallestResultBar: Math.max(...Array.from(document.querySelectorAll(".answer-result-bar"), (bar) => bar.getBoundingClientRect().height))
+    }));
+    expect(mobileResultMetrics.horizontalOverflow).toBeLessThanOrEqual(1);
+    expect(mobileResultMetrics.stageToolsRight).toBeLessThanOrEqual(390);
+    expect(mobileResultMetrics.tallestResultBar).toBeLessThanOrEqual(240);
+    await page.setViewportSize({ width: 1280, height: 720 });
     await expect(page.locator(".leaderboard")).toHaveCount(0);
     await expect(playerPage.getByRole("heading", { name: "Correct", exact: true })).toBeVisible();
     await expect(playerPage.locator(".points-awarded")).toContainText(/^\+[\d,]+ points$/);
