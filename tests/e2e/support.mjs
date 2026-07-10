@@ -27,6 +27,7 @@ export function expectNoRuntimeErrors(errors) {
 export async function loginPresenter(page) {
   await page.goto("/presentation/login");
   await expect(page.getByRole("heading", { name: "Sign in to Pinboard" })).toBeVisible();
+  await expect(page.locator(".page-link-pill code")).toHaveCount(0);
   await page.getByLabel("Email", { exact: true }).fill(PRESENTER_EMAIL);
   await page.getByLabel("Password", { exact: true }).fill(PRESENTER_PASSWORD);
   await page.getByRole("button", { name: /^Sign in(?: with email)?$/i }).click();
