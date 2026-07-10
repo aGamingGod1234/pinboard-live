@@ -1123,8 +1123,8 @@ function renderLeaderboardBreak(remote) {
       </div>
       ${renderLeaderboard(remote.leaderboard, `leaderboard:${remote.pin}`)}
       <div class="leaderboard-callouts">
-        <span>Highest climber: ${escapeHtml(remote.leaderboard[0]?.nickname ?? "Waiting")}</span>
-        <span>Best streak: ${escapeHtml(remote.leaderboard[1]?.nickname ?? remote.leaderboard[0]?.nickname ?? "Waiting")}</span>
+        <span>Highest climber: ${escapeHtml(formatLeaderboardName(remote.leaderboard[0]))}</span>
+        <span>Best streak: ${escapeHtml(formatLeaderboardName(remote.leaderboard[1] ?? remote.leaderboard[0]))}</span>
       </div>
     </section>
   `;
@@ -1158,7 +1158,7 @@ function renderPodiumPlace(player, place, pin) {
   return `
     <div class="podium-place podium-place-${place}">
       <strong>${place}</strong>
-      <span>${escapeHtml(player?.nickname ?? "Empty")}</span>
+      <span>${escapeHtml(formatLeaderboardName(player, "Empty"))}</span>
       ${renderCount(player?.score ?? 0, `podium:${pin}:${place}:${playerKey}`, "", "em")}
     </div>
   `;
@@ -1324,12 +1324,19 @@ function renderLeaderboard(players, scope = "leaderboard") {
       ${players.map((player) => `
         <div class="leader-row">
           <span>${player.rank}</span>
-          <strong>${escapeHtml(player.nickname)}</strong>
+          <strong>${escapeHtml(formatLeaderboardName(player))}</strong>
           ${renderCount(player.score, `${scope}:${player.id ?? player.nickname}`, "", "span")}
         </div>
       `).join("")}
     </div>
   `;
+}
+
+function formatLeaderboardName(player, fallback = "Waiting") {
+  if (!player?.nickname) {
+    return fallback;
+  }
+  return `${player.nickname}${player.departed ? " (left)" : ""}`;
 }
 
 function renderSelectOption(value, label, selectedValue) {

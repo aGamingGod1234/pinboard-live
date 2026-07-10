@@ -197,6 +197,15 @@ test("cookie-authenticated session lifecycle is durable across SSE disconnects",
   const nicknameReuse = await nicknameReuseResponse.json();
   assert.notEqual(nicknameReuse.playerId, joined.playerId);
   assert.equal(nicknameReuse.session.playerCount, 1);
+  assert.deepEqual(
+    nicknameReuse.session.leaderboard
+      .filter((player) => player.nickname === "Cookie Player")
+      .map((player) => ({ id: player.id, departed: player.departed })),
+    [
+      { id: joined.playerId, departed: true },
+      { id: nicknameReuse.playerId, departed: false }
+    ]
+  );
   const nicknameReuseCookie = cookiePair(nicknameReuseResponse.headers.get("set-cookie") ?? "");
 
   const secondLeaveResponse = await postJson(`/api/sessions/${pin}/leave`, {}, {
