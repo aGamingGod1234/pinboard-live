@@ -791,3 +791,33 @@
 - Register the Railway origin on the approved Google OAuth client before restoring `GOOGLE_CLIENT_ID`.
 - Run a staged concurrency/load test against realistic attendance targets before marketing capacity guarantees.
 - Move uploaded media to object storage/CDN and add shared rate limiting before multi-instance scaling.
+
+## [2026-07-10] — Google presenter login and route-label cleanup
+
+### What Was Implemented
+- Replaced the visible production email/password form with Google Identity Services when a Google client is configured, while retaining local authentication as a hidden development and recovery path.
+- Removed the `/presentation/login` route subtitle from the top-right presenter-login pill.
+- Configured the existing Google web client and presenter allowlist in Railway without adding a client secret to the browser credential flow.
+- Added a compact, accessible fallback layout for Google's generated button, including a visually hidden assistive label that no longer appears as duplicate text.
+- Added unit and Playwright coverage for the Google-only selection logic, removed route subtitle, provider button dimensions, and provider assistive-label fallback.
+- Merged PRs #5, #6, and #7 and deployed `d31100d82fdff731d048e3911cf903561939cc65` to Railway as `af6d2319-8a66-42f4-ba14-ef2f176aa5df`.
+
+### Files Modified
+- `public/client-state.js` — centralized whether local presenter authentication should be visible.
+- `public/app.js` — made Google the production presenter login and suppressed the route subtitle on the login pill.
+- `public/styles.css` — constrained the provider button and preserved its assistive label without rendering duplicate text.
+- `test/unit/client-state.test.mjs` — covered Google replacing the visible local login form.
+- `tests/e2e/support.mjs`, `tests/e2e/live-session.desktop.spec.mjs` — covered the route-label cleanup and provider-button fallback.
+- `PROJECT_LOG.md` — task and release record.
+
+### Assumptions Made (flag these for review)
+- The Google Cloud project owner account `agaminggod12345@gmail.com` is the intended initial allowed presenter.
+- The server's verified Google ID-token flow is the intended presenter OAuth implementation; an authorization-code callback and client secret are not required for this browser credential flow.
+
+### Known Issues / Deferred
+- The local password endpoint remains available for development and recovery, but is hidden whenever Google is configured in production.
+- Railway emits an npm production-config deprecation warning during startup; no application runtime errors were present in the final deployment logs.
+
+### Suggested Next Steps
+- Add any additional presenter email addresses to `GOOGLE_ALLOWED_EMAILS` before they need access.
+- Add a managed OAuth test identity if fully automated production Google sign-in checks are required in CI.
