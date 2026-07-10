@@ -1919,9 +1919,11 @@ function buildLeaderboard(session) {
     .sort((left, right) => right.score - left.score || left.joinedAt - right.joinedAt)
     .slice(0, LEADERBOARD_LIMIT)
     .map((player, index) => ({
+      id: player.id,
       rank: index + 1,
       nickname: player.nickname,
-      score: player.score
+      score: player.score,
+      departed: !isActivePlayer(player)
     }));
 }
 
