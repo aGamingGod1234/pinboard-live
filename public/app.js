@@ -657,7 +657,7 @@ function renderMessages() {
 }
 
 function renderHome() {
-  return renderJoinScreen(true);
+  return renderJoinScreen();
 }
 
 function renderPageLink(label, path, showPath = true) {
@@ -692,24 +692,22 @@ function renderPresenter() {
   return renderCreator();
 }
 
-function renderJoinScreen(showPresenterLink = false) {
+function renderJoinScreen() {
   return `
     <section class="shader-screen shader-purple join-screen" data-motion-trigger="ambient-drift">
       <div class="screen-action-row">
-        ${renderPageLink("Join page", "/")}
         <button class="glass-pill" type="button" data-action="go-presenter">Presenter</button>
       </div>
       <div class="join-center">
         <div class="play-wordmark" aria-label="Pinboard Live">Pinboard<span>!</span></div>
         <form class="join-card" data-action="join">
-          <input class="pin-input" name="pin" inputmode="numeric" maxlength="${FORMATTED_PIN_MAX_LENGTH}" placeholder="Game PIN" value="${escapeHtml(state.playerPin)}" data-field="playerPin" aria-label="Game PIN" />
-          <input class="nickname-input" name="nickname" maxlength="32" placeholder="Nickname" value="${escapeHtml(state.nickname)}" data-field="nickname" aria-label="Nickname" />
-          <button class="join-submit" type="submit">Enter</button>
+          <input class="pin-input" name="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="${FORMATTED_PIN_MAX_LENGTH}" placeholder="Game PIN" value="${escapeHtml(state.playerPin)}" data-field="playerPin" aria-label="Game PIN" required />
+          <input class="nickname-input" name="nickname" autocomplete="nickname" maxlength="32" placeholder="Nickname" value="${escapeHtml(state.nickname)}" data-field="nickname" aria-label="Nickname" required />
+          <button class="join-submit" type="submit">Join game</button>
         </form>
       </div>
       <footer class="join-footer">
         <strong>Create and host for free at Pinboard Live</strong>
-        <span>Terms | Privacy | Cookie notice</span>
       </footer>
     </section>
   `;
@@ -719,9 +717,6 @@ function renderPresenterLogin() {
   const showLocalAuth = shouldShowLocalPresenterAuth(state.localAuthEnabled, state.googleClientId);
   return `
     <section class="shader-screen shader-management presenter-login-shell" data-motion-trigger="ambient-drift">
-      <div class="screen-action-row">
-        ${renderPageLink("Presenter login", PRESENTATION_LOGIN_PATH, false)}
-      </div>
       <div class="login-panel presenter-login-card stack">
         <div>
           <p class="eyebrow">Presenter</p>
@@ -779,21 +774,20 @@ function renderPresenterDashboard() {
           <div>
             <p class="eyebrow">Presenter projects</p>
             <h1>Welcome back, ${escapeHtml(displayName)}</h1>
-            ${renderPageLink("Presentation home", PRESENTATION_HOME_PATH)}
           </div>
-          <button class="ghost" type="button" data-action="sign-out-presenter">Sign out</button>
+          <button class="glass-pill dashboard-sign-out" type="button" data-action="sign-out-presenter">Sign out</button>
         </header>
         <div class="dashboard-grid">
           <button class="presentation-tile create-presentation-tile" type="button" data-action="create-presentation">
             ${renderPresentationTitleCard({ title: "Untitled presentation", text: "Blank draft" })}
             <span class="presentation-tile-text">
-              <strong>Creating new presentation</strong>
+              <strong>New presentation</strong>
               <small>Start from a blank draft.</small>
             </span>
           </button>
           <section class="previous-presentations" aria-labelledby="previous-presentations-title">
             <div class="previous-presentations-head">
-              <h2 id="previous-presentations-title">View your previous presentations</h2>
+              <h2 id="previous-presentations-title">Your presentations</h2>
               ${state.presentationsLoading ? `<span>Loading</span>` : `<span>${presentations.length}</span>`}
             </div>
             ${presentations.length ? `
@@ -995,7 +989,7 @@ function renderHostLobby(remote) {
         <div class="join-instructions">
           <span>Join at</span>
           <a href="${escapeHtml(joinLink)}">${escapeHtml(publicJoinPath)}</a>
-          <span>or use the Pinboard Live app screen.</span>
+          <span>or scan the QR code.</span>
         </div>
         <div class="pin-divider" aria-hidden="true"></div>
         <div class="game-pin-block">
@@ -1013,9 +1007,9 @@ function renderHostLobby(remote) {
         </div>
         ${renderParticipantList(remote)}
       </div>
-      <div class="participant-dock">
+      ${hasPlayers ? `<div class="participant-dock">
         <div class="dock-stat"><span>Players</span>${renderCount(remote.playerCount, `host-lobby-players:${remote.pin}`, "", "strong")}</div>
-      </div>
+      </div>` : ""}
     </section>
   `;
 }
@@ -1156,7 +1150,7 @@ function renderPlayerWaiting(remote) {
         <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span></div>
         <p class="eyebrow">PIN ${formatPin(remote.pin)}</p>
         <h1>You're in</h1>
-        <p>${escapeHtml(remote.me?.nickname ?? "Player")} - wait for the presenter to start.</p>
+        <p>${escapeHtml(remote.me?.nickname ?? "Player")} — wait for the presenter to start.</p>
         <div class="dock-stat"><span>Players</span>${renderCount(remote.playerCount, `player-lobby-players:${remote.pin}`, "", "strong")}</div>
         <div class="dock-stat"><span>Score</span>${renderCount(remote.me?.score ?? 0, `player-lobby-score:${state.playerId ?? "player"}`, "", "strong")}</div>
       </div>
@@ -1234,6 +1228,7 @@ function renderPlayerAnswerStage(remote) {
       `}
       <div class="player-score-dock">
         <strong>${escapeHtml(remote.me?.nickname ?? "Player")}</strong>
+        <small>Score</small>
         ${renderCount(remote.me?.score ?? 0, `player-score:${state.playerId ?? "player"}`)}
       </div>
     </section>

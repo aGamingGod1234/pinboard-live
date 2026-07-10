@@ -58,6 +58,41 @@ test("Google presenter button stays compact when provider inline styles are unav
   expect(metrics.assistiveLabelHeight).toBe(VISUALLY_HIDDEN_SIZE);
 });
 
+test("minor interface chrome stays clear, contextual, and keyboard visible", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: "Join page" })).toHaveCount(0);
+  await expect(page.getByText("Terms | Privacy | Cookie notice", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Game PIN", { exact: true })).toHaveAttribute("required", "");
+  await expect(page.getByLabel("Game PIN", { exact: true })).toHaveAttribute("autocomplete", "one-time-code");
+  await expect(page.getByLabel("Nickname", { exact: true })).toHaveAttribute("required", "");
+  await expect(page.getByLabel("Nickname", { exact: true })).toHaveAttribute("autocomplete", "nickname");
+  await expect(page.getByRole("button", { name: "Join game", exact: true })).toBeVisible();
+
+  await page.getByLabel("Game PIN", { exact: true }).focus();
+  const joinFocus = await page.getByLabel("Game PIN", { exact: true }).evaluate((input) => {
+    const style = getComputedStyle(input);
+    return { boxShadow: style.boxShadow, outlineStyle: style.outlineStyle };
+  });
+  expect(joinFocus.boxShadow).not.toBe("none");
+  expect(joinFocus.outlineStyle).toBe("solid");
+
+  await page.goto("/presentation/login");
+  await expect(page.getByRole("link", { name: "Presenter login" })).toHaveCount(0);
+  await loginPresenter(page);
+  await expect(page.getByRole("heading", { name: "Your presentations", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /New presentation/i })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Presentation home" })).toHaveCount(0);
+
+  const dashboardMetrics = await page.evaluate(() => {
+    const notice = document.querySelector(".message-layer > .notice");
+    return {
+      noticeBackground: notice ? getComputedStyle(notice).backgroundColor : ""
+    };
+  });
+  await expect.poll(() => page.locator('[data-action="sign-out-presenter"]').evaluate((button) => button.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  expect(dashboardMetrics.noticeBackground).toBe("rgb(21, 108, 52)");
+});
+
 test("quiz editor supports two to six answers, multiple correct toggles, and one removable image", async ({ page }) => {
   await loginPresenter(page);
   await page.getByRole("button", { name: /new presentation/i }).click();
@@ -166,6 +201,8 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     await expect(page.getByText(/^Saved (?!draft$).+/)).toBeVisible();
 
     await page.getByRole("button", { name: "Host live", exact: true }).first().click();
+    await expect(page.locator(".participant-dock")).toHaveCount(0);
+    await expect(page.getByText("or scan the QR code.", { exact: true })).toBeVisible();
     const pinBlock = page.getByText(/Game PIN:\s*\d{3}\s*\d{3}/).first();
     await expect(pinBlock).toBeVisible();
     const pin = (await pinBlock.textContent()).replace(/\D/g, "");
@@ -176,6 +213,7 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
 
     await joinAsPlayer(playerPage, pin, "Reloading player");
     await expect(page.getByText("1 participant joined", { exact: true })).toBeVisible();
+    await expect(page.locator(".participant-dock")).toBeVisible();
 
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.locator(".answer-progress").first()).toHaveAttribute("aria-label", "0 of 0 answers");
@@ -243,7 +281,7 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     }));
     await playerContext.clearCookies();
     await playerPage.getByRole("button", { name: "Leave", exact: true }).click();
-    await expect(playerPage.getByRole("button", { name: "Enter", exact: true })).toBeVisible();
+    await expect(playerPage.getByRole("button", { name: "Join game", exact: true })).toBeVisible();
     const expectedFailedLeaveRequest = playerErrors.findIndex((error) => error.includes("status of 503"));
     expect(expectedFailedLeaveRequest).toBeGreaterThanOrEqual(0);
     playerErrors.splice(expectedFailedLeaveRequest, 1);

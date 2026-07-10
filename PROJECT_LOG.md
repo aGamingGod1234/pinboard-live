@@ -898,3 +898,35 @@
 
 ### Suggested Next Steps
 - Recheck the deployed editor and presenter flow after Railway promotes the merged commit.
+
+## 2026-07-10 — Minor Interface Clarity and Accessibility Polish
+
+### What Was Implemented
+- Removed redundant current-page pills from the join, presenter-login, and presenter-dashboard screens.
+- Replaced vague or wordy copy with clearer actions and headings, including Join game, New presentation, Your presentations, and QR-code guidance.
+- Added native required/autocomplete hints to the player join form without changing its flow.
+- Distinguished success notices from errors with a green status treatment.
+- Improved keyboard focus visibility across light and dark surfaces and standardized primary controls at a 44 px minimum target.
+- Hid the duplicate empty-lobby player counter until somebody joins.
+- Improved player context with a high-contrast waiting-room PIN and an explicit in-game Score label.
+- Added coarse-pointer target sizing for compact menu, dismiss, option-remove, and media-remove controls.
+
+### Files Modified
+- `public/app.js` — streamlined self-links, copy, join semantics, lobby context, and player score labeling.
+- `public/styles.css` — success status, focus ring, touch targets, hover feedback, and player contrast polish.
+- `tests/e2e/live-session.desktop.spec.mjs` — dashboard/join clarity, focus, status, touch-target, and lobby regressions.
+- `tests/e2e/player.mobile.spec.mjs` — mobile PIN contrast and score-context regressions.
+- `tests/e2e/support.mjs` — updated join action helper.
+- `PROJECT_LOG.md` — task record.
+
+### Assumptions Made (flag these for review)
+- Existing screen composition, brand styling, and game behavior should remain unchanged.
+- Placeholder legal text should be removed until real Terms, Privacy, and Cookie links exist.
+- Presenter and project self-links add no value when already on their destination screen.
+
+### Known Issues / Deferred
+- No new dependencies or substantive flow changes were introduced.
+- The previously documented Google Identity provider-origin issue remains outside this UI-polish scope.
+
+### Suggested Next Steps
+- Re-run the same desktop/mobile smoke checks after Railway promotes the merged commit.
