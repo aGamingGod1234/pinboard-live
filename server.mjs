@@ -20,6 +20,7 @@ import {
   validateContentLength
 } from "./src/http-security.mjs";
 import {
+  calculateQuestionAward,
   DomainError,
   endSession as endSessionDomain,
   recordAnswer,
@@ -135,7 +136,7 @@ const INSTANCE_ID = randomUUID();
 const scryptAsync = promisify(scrypt);
 const { Pool } = pg;
 
-/** @typedef {"lobby" | "question" | "answering" | "results" | "ended"} Phase */
+/** @typedef {"lobby" | "question" | "answering" | "results" | "leaderboard" | "ended"} Phase */
 /** @typedef {"quiz" | "true_false" | "slide"} QuestionKind */
 /** @typedef {{ id: string, text: string }} Option */
 /** @typedef {{ id: string, name: string, type: string, size: number, url: string }} MediaAsset */
@@ -145,7 +146,7 @@ const { Pool } = pg;
 /** @typedef {{ id: string, response: import("node:http").ServerResponse, role: "host" | "player", playerId: string | null, playerTokenHash: string | null, presenterTokenHash: string | null, heartbeat: NodeJS.Timeout | null, backpressured: boolean, pendingStatePayload: string | null, pendingAnswerPayload: string | null, drainHandler: (() => void) | null }} Client */
 /** @typedef {{ id: string, email: string, name: string, passwordHash: string, googleSub?: string | null }} Presenter */
 /** @typedef {{ id: string, presenterId: string, title: string, snapshot: { title: string, questions: Question[] }, createdAt: string, updatedAt: string, version: number }} Presentation */
-/** @typedef {{ pin: string, title: string, presenterId: string, questions: Question[], phase: Phase, currentQuestionIndex: number, players: Map<string, Player>, answers: Map<string, Answer>, scoredQuestionIndexes: Set<number>, openedAt: number | null, clients: Map<string, Client>, endedReason: string | null, endedAt: number | null, createdAt: number, version: number }} Session */
+/** @typedef {{ pin: string, title: string, presenterId: string, questions: Question[], phase: Phase, currentQuestionIndex: number, players: Map<string, Player>, answers: Map<string, Answer>, scoredQuestionIndexes: Set<number>, openedAt: number | null, effectiveDurationMs: number | null, clients: Map<string, Client>, endedReason: string | null, endedAt: number | null, createdAt: number, version: number }} Session */
 
 const staticRoutes = new Map([
   ["/", { path: new URL("./public/index.html", import.meta.url), type: "text/html; charset=utf-8" }],
@@ -790,6 +791,7 @@ async function handleCreateSession(request, response) {
     answers: new Map(),
     scoredQuestionIndexes: new Set(),
     openedAt: null,
+    effectiveDurationMs: null,
     clients: new Map(),
     endedReason: null,
     endedAt: null,
@@ -1240,7 +1242,7 @@ function openAnswers(session) {
   scheduleQuestionTimer(session);
 }
 
-function revealAnswers(session, reason = "manual") {
+function revealAnswers(session, reason = "manual", now = Date.now()) {
   const question = getCurrentQuestion(session);
 
   if (session.phase !== "answering" && session.phase !== "question") {
@@ -1252,6 +1254,9 @@ function revealAnswers(session, reason = "manual") {
   }
 
   clearQuestionTimer(session);
+  session.effectiveDurationMs = reason === "timer"
+    ? question.timerSeconds * 1_000
+    : Math.max(1, now - Number(session.openedAt ?? now));
   scoreCurrentQuestion(session, question);
   session.phase = "results";
 }
@@ -1260,7 +1265,17 @@ function advanceSession(session) {
   const question = getCurrentQuestion(session);
   const isSlideReadyForNext = session.phase === "question" && question?.kind === "slide";
 
-  if (session.phase !== "results" && !isSlideReadyForNext) {
+  if (session.phase === "results") {
+    const nextIndex = session.currentQuestionIndex + 1;
+    if (nextIndex >= session.questions.length) {
+      endSession(session);
+      return;
+    }
+    session.phase = "leaderboard";
+    return;
+  }
+
+  if (session.phase !== "leaderboard" && !isSlideReadyForNext) {
     throw new HttpError(409, "Reveal results before moving on.");
   }
 
@@ -1305,6 +1320,7 @@ function resetCurrentAnswers(session) {
   clearQuestionTimer(session);
   session.answers = new Map();
   session.openedAt = null;
+  session.effectiveDurationMs = null;
 }
 
 function scheduleQuestionTimer(session) {
@@ -1874,7 +1890,18 @@ function getStateForRole(session, role, playerId) {
   const question = getCurrentQuestion(session);
   const player = playerId ? session.players.get(playerId) : null;
   const activePlayers = [...session.players.values()].filter(isActivePlayer);
-  const showAnswers = role === "host" || session.phase === "results" || session.phase === "ended";
+  const showAnswers = role === "host" || session.phase === "results" || session.phase === "leaderboard" || session.phase === "ended";
+  const playerAnswer = playerId ? session.answers.get(playerId) : null;
+  const award = showAnswers && playerAnswer && question && question.kind !== "slide"
+    ? calculateQuestionAward({
+        questionPoints: question.points,
+        openedAt: session.openedAt,
+        submittedAt: playerAnswer.answeredAt,
+        effectiveDurationMs: session.effectiveDurationMs ?? question.timerSeconds * 1_000,
+        selectedOptionIds: playerAnswer.selectedOptionIds,
+        correctOptionIds: question.correctOptionIds
+      })
+    : null;
 
   return {
     pin: session.pin,
@@ -1886,13 +1913,17 @@ function getStateForRole(session, role, playerId) {
     playerCount: activePlayers.length,
     answerCount: session.answers.size,
     openedAt: session.openedAt,
+    effectiveDurationMs: session.effectiveDurationMs,
     currentQuestion: question ? serializeQuestion(question, showAnswers, session.pin) : null,
     answerCounts: showAnswers && question ? buildAnswerCounts(session, question) : {},
     leaderboard: buildLeaderboard(session),
     recentPlayers: role === "host" ? buildRecentPlayers(session) : [],
     me: player ? { id: player.id, nickname: player.nickname, score: player.score } : null,
-    selectedOptionIds: playerId ? session.answers.get(playerId)?.selectedOptionIds ?? [] : [],
-    selectedOptionId: playerId ? session.answers.get(playerId)?.selectedOptionIds?.[0] ?? null : null,
+    selectedOptionIds: playerAnswer?.selectedOptionIds ?? [],
+    selectedOptionId: playerAnswer?.selectedOptionIds?.[0] ?? null,
+    requiredSelectionCount: question?.correctOptionIds?.length ?? 0,
+    answerOutcome: showAnswers && playerId ? award?.outcome ?? "timeout" : null,
+    awardedPoints: award?.awardedPoints ?? 0,
     endedReason: session.endedReason,
     endedAt: session.endedAt,
     mediaLimitBytes: MAX_MEDIA_BYTES
@@ -3851,6 +3882,7 @@ function serializeSessionSnapshot(session) {
     currentQuestionIndex: session.currentQuestionIndex,
     scoredQuestionIndexes: [...session.scoredQuestionIndexes],
     openedAt: session.openedAt,
+    effectiveDurationMs: session.effectiveDurationMs,
     endedReason: session.endedReason,
     endedAt: session.endedAt,
     createdAt: session.createdAt
@@ -3899,6 +3931,7 @@ function hydrateSessionSnapshot(snapshot, clients, version = 0, playerRows = [],
     answers,
     scoredQuestionIndexes: new Set(snapshot.scoredQuestionIndexes ?? []),
     openedAt: snapshot.openedAt ?? null,
+    effectiveDurationMs: Number.isFinite(snapshot.effectiveDurationMs) ? Number(snapshot.effectiveDurationMs) : null,
     clients,
     endedReason: snapshot.endedReason ?? null,
     endedAt: snapshot.endedAt ?? null,

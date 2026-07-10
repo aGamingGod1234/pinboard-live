@@ -302,6 +302,43 @@ test("presentation saves normalize multiple and legacy correct option fields", a
   assert.deepEqual((await legacySave.json()).presentation.snapshot.questions[0].correctOptionIds, [optionIds[0]]);
 });
 
+test("answer results advance through a dedicated leaderboard before the next question", async () => {
+  const presenter = await loginPresenter();
+  const optionIds = [randomUUID(), randomUUID()];
+  const questions = ["First question", "Second question"].map((text) => ({
+    id: randomUUID(),
+    kind: "quiz",
+    text,
+    points: 1_000,
+    timerSeconds: 30,
+    options: optionIds.map((id, index) => ({ id, text: `Option ${index + 1}` })),
+    correctOptionIds: [optionIds[0]],
+    media: null
+  }));
+  const created = await postJson("/api/sessions", { title: "Leaderboard phases", questions }, presenterMutationHeaders(presenter));
+  const { pin } = await created.json();
+  const joinResponse = await postJson(`/api/sessions/${pin}/join`, { nickname: "Phase player" }, { Origin: baseUrl });
+  const playerCookie = cookiePair(joinResponse.headers.get("set-cookie") ?? "");
+
+  await postJson(`/api/sessions/${pin}/start`, {}, presenterMutationHeaders(presenter));
+  await postJson(`/api/sessions/${pin}/open`, {}, presenterMutationHeaders(presenter));
+  await postJson(`/api/sessions/${pin}/answer`, { selectedOptionIds: [optionIds[0]] }, { Cookie: playerCookie, Origin: baseUrl });
+  const reveal = await postJson(`/api/sessions/${pin}/reveal`, {}, presenterMutationHeaders(presenter));
+  const revealed = await reveal.json();
+  assert.equal(revealed.session.phase, "results");
+  assert.ok(revealed.session.effectiveDurationMs >= 1);
+
+  const leaderboard = await postJson(`/api/sessions/${pin}/next`, {}, presenterMutationHeaders(presenter));
+  const leaderboardState = await leaderboard.json();
+  assert.equal(leaderboardState.session.phase, "leaderboard");
+  assert.equal(leaderboardState.session.currentQuestionIndex, 0);
+
+  const next = await postJson(`/api/sessions/${pin}/next`, {}, presenterMutationHeaders(presenter));
+  const nextState = await next.json();
+  assert.equal(nextState.session.phase, "answering");
+  assert.equal(nextState.session.currentQuestionIndex, 1);
+});
+
 async function loginPresenter() {
   const response = await postJson("/api/auth", {
     email: TEST_EMAIL,
