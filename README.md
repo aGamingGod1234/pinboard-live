@@ -37,7 +37,6 @@ The server reads environment variables directly from the process. [`.env.example
 | `ALLOW_INSECURE_LOCAL_AUTH` | Explicit opt-in for the built-in local credentials. Keep `false` outside isolated local development. |
 | `GOOGLE_CLIENT_ID` | Optional Google presenter sign-in client ID. |
 | `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Optional Google OAuth server-flow configuration. |
-| `GOOGLE_ALLOWED_EMAILS` / `GOOGLE_ALLOWED_DOMAINS` | Comma-separated Google presenter allowlists. The bootstrap presenter email is always allowed; production Google sign-in is default-deny without an allowlist. |
 | `DATABASE_URL` | PostgreSQL connection URL for durable presenters, sessions, players, answers, and media. |
 | `MAX_QUESTION_MEDIA_BYTES` | Maximum raw media upload size in bytes; defaults to 100 MiB and cannot exceed 500 MiB. |
 | `MAX_MEDIA_STORAGE_BYTES_PER_PRESENTER` | Per-presenter media storage quota; defaults to 1 GiB. |

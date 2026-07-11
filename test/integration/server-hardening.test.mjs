@@ -8,6 +8,7 @@ const TEST_EMAIL = "hardening@example.test";
 const TEST_PASSWORD = "hardening-password-123";
 const GOOGLE_TEST_CLIENT_ID = "hardening-google-client";
 const GOOGLE_TEST_EMAIL = "google-hardening@example.test";
+const PUBLIC_GOOGLE_TEST_EMAIL = "new-presenter@gmail.com";
 const GOOGLE_TEST_KID = "hardening-google-key";
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const { publicKey: googlePublicKey, privateKey: googlePrivateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -21,6 +22,28 @@ globalThis.fetch = async (input, init) => {
     return new Response(JSON.stringify({ keys: [JSON.parse(process.env.MOCK_GOOGLE_JWK)] }), {
       status: 200,
       headers: { "content-type": "application/json", "cache-control": "max-age=3600" }
+    });
+  }
+  if (url === "https://oauth2.googleapis.com/token") {
+    return new Response(JSON.stringify({
+      access_token: "mock-google-access-token",
+      expires_in: 3600,
+      id_token: "mock-google-id-token",
+      token_type: "Bearer"
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }
+  if (url === "https://openidconnect.googleapis.com/v1/userinfo") {
+    return new Response(JSON.stringify({
+      email: "${GOOGLE_TEST_EMAIL}",
+      email_verified: true,
+      name: "Google Hardening Callback",
+      sub: "callback-google-presenter-sub"
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
     });
   }
   return originalFetch(input, init);
@@ -45,6 +68,7 @@ before(async () => {
       PRESENTER_EMAIL: TEST_EMAIL,
       PRESENTER_PASSWORD: TEST_PASSWORD,
       GOOGLE_CLIENT_ID: GOOGLE_TEST_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET: "hardening-google-secret",
       GOOGLE_ALLOWED_EMAILS: GOOGLE_TEST_EMAIL,
       MOCK_GOOGLE_JWK: JSON.stringify(googleTestJwk),
       DATABASE_URL: "",
@@ -125,7 +149,10 @@ test("anonymous presenter restoration is a quiet cache-safe response", async () 
 
 test("Google credential login honors the requested cookie persistence", async () => {
   const sessionOnly = await postJson("/api/auth/google", {
-    credential: createGoogleTestCredential(),
+    credential: createGoogleTestCredential({
+      email: PUBLIC_GOOGLE_TEST_EMAIL,
+      sub: "public-google-presenter-sub"
+    }),
     keepSignedIn: false
   }, { Origin: baseUrl });
   assert.equal(sessionOnly.status, 200);
@@ -140,6 +167,45 @@ test("Google credential login honors the requested cookie persistence", async ()
   }, { Origin: baseUrl });
   assert.equal(persistent.status, 200);
   assert.match(persistent.headers.get("set-cookie") ?? "", /(?:^|;\s*)Max-Age=\d+(?:;|$)/i);
+});
+
+test("Google OAuth callback honors the requested cookie persistence", async () => {
+  const start = await fetch(`${baseUrl}/auth/google?keepSignedIn=1`, {
+    redirect: "manual"
+  });
+  assert.equal(start.status, 302);
+  const startCookies = start.headers.get("set-cookie") ?? "";
+  const state = extractCookieValue(startCookies, "pinboard_oauth_state");
+  const keepSignedIn = extractCookieValue(startCookies, "pinboard_oauth_keep_signed_in");
+  assert.ok(state);
+  assert.equal(keepSignedIn, "1");
+
+  const callback = await fetch(`${baseUrl}/auth/google/callback?state=${encodeURIComponent(state)}&code=mock-code`, {
+    headers: {
+      Cookie: [
+        `pinboard_oauth_state=${encodeURIComponent(state)}`,
+        `pinboard_oauth_keep_signed_in=1`
+      ].join("; ")
+    },
+    redirect: "manual"
+  });
+  assert.equal(callback.status, 302);
+  assert.match(callback.headers.get("set-cookie") ?? "", /pinboard_presenter=/);
+  assert.match(callback.headers.get("set-cookie") ?? "", /(?:^|;\s*)Max-Age=\d+(?:;|$)/i);
+});
+
+test("game audio manifest and assets are served with the expected media types", async () => {
+  const manifestResponse = await fetch(`${baseUrl}/audio/game-audio.json`);
+  assert.equal(manifestResponse.status, 200);
+  assert.match(manifestResponse.headers.get("content-type") ?? "", /application\/json/i);
+  const manifest = await manifestResponse.json();
+  assert.equal(typeof manifest.loops?.lobby?.src, "string");
+  assert.equal(typeof manifest.loops?.question?.src, "string");
+  assert.equal(typeof manifest.effects?.answerSubmit?.src, "string");
+
+  const loopResponse = await fetch(`${baseUrl}${manifest.loops.lobby.src}`);
+  assert.equal(loopResponse.status, 200);
+  assert.match(loopResponse.headers.get("content-type") ?? "", /audio\/mpeg/i);
 });
 
 test("ordinary auth JSON is rejected before buffering media-sized bodies", async () => {
@@ -265,8 +331,17 @@ test("trusted real-IP headers rate-limit distinct originating clients independen
       },
       redirect: "manual"
     });
-    assert.equal(response.status, 503);
+    assert.equal(response.status, 302);
   }
+
+  const rateLimited = await fetch(`${baseUrl}/auth/google`, {
+    headers: {
+      "X-Real-IP": "198.51.100.10",
+      "X-Forwarded-For": "spoofed-client, 10.0.0.20"
+    },
+    redirect: "manual"
+  });
+  assert.equal(rateLimited.status, 429);
 
   const differentClient = await fetch(`${baseUrl}/auth/google`, {
     headers: {
@@ -275,7 +350,7 @@ test("trusted real-IP headers rate-limit distinct originating clients independen
     },
     redirect: "manual"
   });
-  assert.equal(differentClient.status, 503);
+  assert.equal(differentClient.status, 302);
 });
 
 async function loginPresenter() {
@@ -292,21 +367,26 @@ async function loginPresenter() {
   };
 }
 
-function createGoogleTestCredential() {
+function createGoogleTestCredential({ email = GOOGLE_TEST_EMAIL, sub = "hardening-google-sub" } = {}) {
   const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
   const header = encode({ alg: "RS256", kid: GOOGLE_TEST_KID, typ: "JWT" });
   const payload = encode({
     iss: "accounts.google.com",
     aud: GOOGLE_TEST_CLIENT_ID,
     exp: Math.floor(Date.now() / 1000) + 300,
-    sub: "hardening-google-sub",
-    email: GOOGLE_TEST_EMAIL,
+    sub,
+    email,
     email_verified: true,
     name: "Google Hardening"
   });
   const signingInput = `${header}.${payload}`;
   const signature = sign("RSA-SHA256", Buffer.from(signingInput), googlePrivateKey).toString("base64url");
   return `${signingInput}.${signature}`;
+}
+
+function extractCookieValue(cookieHeader, name) {
+  const match = cookieHeader.match(new RegExp(`${name}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : "";
 }
 
 function postJson(pathname, body, extraHeaders = {}) {

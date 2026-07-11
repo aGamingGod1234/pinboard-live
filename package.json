@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
+    "generate:game-audio": "node scripts/generate-game-audio.mjs",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "node --test test/unit/*.test.mjs",
     "test:integration": "node --test test/integration/*.test.mjs",

@@ -74,6 +74,17 @@ const PRESENTER_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PRESENTER_COOKIE = "pinboard_presenter";
 const PRESENTER_TOKEN_VERSION = 2;
 const PRESENTER_TOKEN_BYTES = 32;
+const GOOGLE_OAUTH_STATE_COOKIE = "pinboard_oauth_state";
+const GOOGLE_OAUTH_KEEP_SIGNED_IN_COOKIE = "pinboard_oauth_keep_signed_in";
+const GAME_AUDIO_MANIFEST_ROUTE = "/audio/game-audio.json";
+const GAME_AUDIO_LOBBY_LOOP_ROUTE = "/audio/lobby-loop.mp3";
+const GAME_AUDIO_QUESTION_LOOP_ROUTE = "/audio/question-loop.mp3";
+const GAME_AUDIO_ANSWER_SUBMIT_ROUTE = "/audio/answer-submit.mp3";
+const GAME_AUDIO_ANSWER_ACCEPTED_ROUTE = "/audio/answer-accepted.mp3";
+const GAME_AUDIO_TIMER_URGENCY_ROUTE = "/audio/timer-urgency.mp3";
+const GAME_AUDIO_LEADERBOARD_TRANSITION_ROUTE = "/audio/leaderboard-transition.mp3";
+const GAME_AUDIO_PODIUM_REVEAL_ROUTE = "/audio/podium-reveal.mp3";
+const GAME_AUDIO_CONFETTI_CELEBRATION_ROUTE = "/audio/confetti-celebration.mp3";
 const BASE64URL_SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const PLAYER_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 const ENDED_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -121,15 +132,6 @@ const DATABASE_URL = process.env.DATABASE_URL ?? "";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? "";
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ?? "";
-const GOOGLE_ALLOWED_EMAILS = new Set(
-  (process.env.GOOGLE_ALLOWED_EMAILS ?? "").split(",").map(normalizeEmail).filter(Boolean)
-);
-const GOOGLE_ALLOWED_DOMAINS = new Set(
-  (process.env.GOOGLE_ALLOWED_DOMAINS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean)
-);
-if (BOOTSTRAP_PRESENTER_EMAIL) {
-  GOOGLE_ALLOWED_EMAILS.add(BOOTSTRAP_PRESENTER_EMAIL);
-}
 const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN ?? "";
 const ALLOW_INSECURE_LOCAL_AUTH = process.env.ALLOW_INSECURE_LOCAL_AUTH === "true";
 const TRUST_PROXY = process.env.TRUST_PROXY === "true" || Boolean(process.env.RAILWAY_ENVIRONMENT);
@@ -154,7 +156,16 @@ const staticRoutes = new Map([
   ["/index.html", { path: new URL("./public/index.html", import.meta.url), type: "text/html; charset=utf-8" }],
   ["/styles.css", { path: new URL("./public/styles.css", import.meta.url), type: "text/css; charset=utf-8" }],
   ["/app.js", { path: new URL("./public/app.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
-  ["/client-state.js", { path: new URL("./public/client-state.js", import.meta.url), type: "text/javascript; charset=utf-8" }]
+  ["/client-state.js", { path: new URL("./public/client-state.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
+  [GAME_AUDIO_MANIFEST_ROUTE, { path: new URL("./public/audio/game-audio.json", import.meta.url), type: "application/json; charset=utf-8" }],
+  [GAME_AUDIO_LOBBY_LOOP_ROUTE, { path: new URL("./public/audio/lobby-loop.mp3", import.meta.url), type: "audio/mpeg" }],
+  [GAME_AUDIO_QUESTION_LOOP_ROUTE, { path: new URL("./public/audio/question-loop.mp3", import.meta.url), type: "audio/mpeg" }],
+  [GAME_AUDIO_ANSWER_SUBMIT_ROUTE, { path: new URL("./public/audio/answer-submit.mp3", import.meta.url), type: "audio/mpeg" }],
+  [GAME_AUDIO_ANSWER_ACCEPTED_ROUTE, { path: new URL("./public/audio/answer-accepted.mp3", import.meta.url), type: "audio/mpeg" }],
+  [GAME_AUDIO_TIMER_URGENCY_ROUTE, { path: new URL("./public/audio/timer-urgency.mp3", import.meta.url), type: "audio/mpeg" }],
+  [GAME_AUDIO_LEADERBOARD_TRANSITION_ROUTE, { path: new URL("./public/audio/leaderboard-transition.mp3", import.meta.url), type: "audio/mpeg" }],
+  [GAME_AUDIO_PODIUM_REVEAL_ROUTE, { path: new URL("./public/audio/podium-reveal.mp3", import.meta.url), type: "audio/mpeg" }],
+  [GAME_AUDIO_CONFETTI_CELEBRATION_ROUTE, { path: new URL("./public/audio/confetti-celebration.mp3", import.meta.url), type: "audio/mpeg" }]
 ]);
 const STATIC_CACHE_CONTROL = "no-store";
 
@@ -411,7 +422,7 @@ async function routeRequest(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/auth/google") {
-    await handleGoogleAuthStart(request, response);
+    await handleGoogleAuthStart(request, response, url);
     return;
   }
 
@@ -539,10 +550,11 @@ async function handleAuth(request, response) {
   await establishPresenterSession(response, presenter, shouldPersistPresenterSession(body.keepSignedIn));
 }
 
-async function handleGoogleAuthStart(request, response) {
+async function handleGoogleAuthStart(request, response, url) {
   assertGoogleOAuthConfigured();
   const state = randomBytes(24).toString("base64url");
   const redirectUri = getGoogleRedirectUri(request);
+  const keepSignedIn = parseBooleanLike(url?.searchParams.get("keepSignedIn"));
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     redirect_uri: redirectUri,
@@ -553,19 +565,27 @@ async function handleGoogleAuthStart(request, response) {
     state
   });
 
-  setCookie(response, "pinboard_oauth_state", state, { maxAge: 600 });
+  if (keepSignedIn) {
+    setCookie(response, GOOGLE_OAUTH_KEEP_SIGNED_IN_COOKIE, "1", { maxAge: 600 });
+  } else {
+    clearCookie(response, GOOGLE_OAUTH_KEEP_SIGNED_IN_COOKIE);
+  }
+  setCookie(response, GOOGLE_OAUTH_STATE_COOKIE, state, { maxAge: 600 });
   response.writeHead(302, { Location: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` });
   response.end();
 }
 
 async function handleGoogleAuthCallback(request, response, url) {
   assertGoogleOAuthConfigured();
-  const expectedState = readCookies(request).pinboard_oauth_state;
+  const cookies = readCookies(request);
+  const expectedState = cookies[GOOGLE_OAUTH_STATE_COOKIE];
+  const keepSignedIn = parseBooleanLike(cookies[GOOGLE_OAUTH_KEEP_SIGNED_IN_COOKIE]);
   const state = url.searchParams.get("state") ?? "";
   const code = url.searchParams.get("code") ?? "";
   const error = url.searchParams.get("error");
 
-  clearCookie(response, "pinboard_oauth_state");
+  clearCookie(response, GOOGLE_OAUTH_STATE_COOKIE);
+  clearCookie(response, GOOGLE_OAUTH_KEEP_SIGNED_IN_COOKIE);
 
   if (error) {
     throw new HttpError(400, `Google sign-in failed: ${error}`);
@@ -582,7 +602,7 @@ async function handleGoogleAuthCallback(request, response, url) {
   }
 
   const presenter = await findOrCreateGooglePresenter(profile);
-  await establishPresenterSession(response, presenter, true, { redirect: true });
+  await establishPresenterSession(response, presenter, keepSignedIn, { redirect: true });
 }
 
 async function handleGoogleCredentialAuth(request, response) {
@@ -593,6 +613,11 @@ async function handleGoogleCredentialAuth(request, response) {
   const presenter = await findOrCreateGooglePresenter(profile);
 
   await establishPresenterSession(response, presenter, shouldPersistPresenterSession(body.keepSignedIn));
+}
+
+function parseBooleanLike(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 async function handleCurrentPresenter(request, response) {
@@ -2759,10 +2784,6 @@ function validateStartupConfig() {
   if ((!BOOTSTRAP_PRESENTER_EMAIL || !BOOTSTRAP_PRESENTER_PASSWORD) && !GOOGLE_CLIENT_ID) {
     throw new Error("Configure either PRESENTER_EMAIL/PRESENTER_PASSWORD or GOOGLE_CLIENT_ID.");
   }
-  if (IS_PRODUCTION && GOOGLE_CLIENT_ID && GOOGLE_ALLOWED_EMAILS.size === 0 && GOOGLE_ALLOWED_DOMAINS.size === 0) {
-    throw new Error("Configure GOOGLE_ALLOWED_EMAILS or GOOGLE_ALLOWED_DOMAINS before enabling Google sign-in in production.");
-  }
-
   const usesDefaultLocalCredentials = !IS_PRODUCTION
     && BOOTSTRAP_PRESENTER_EMAIL === DEFAULT_LOCAL_PRESENTER_EMAIL
     && BOOTSTRAP_PRESENTER_PASSWORD === DEFAULT_LOCAL_PRESENTER_PASSWORD;
@@ -3042,9 +3063,6 @@ async function findPresenterByGoogleSub(googleSub) {
 }
 
 async function findOrCreateGooglePresenter(profile) {
-  if (!isGooglePresenterAllowed(profile.email)) {
-    throw new HttpError(403, "This Google account is not allowed to present.", "GOOGLE_ACCOUNT_NOT_ALLOWED");
-  }
   const normalizedEmail = normalizeEmail(profile.email);
   const googleSub = typeof profile.sub === "string" && profile.sub ? profile.sub : null;
   const name = normalizePresenterName(profile.name, normalizedEmail);
@@ -3081,12 +3099,6 @@ async function findOrCreateGooglePresenter(profile) {
     [presenter.id, presenter.email, presenter.name, presenter.googleSub, presenter.passwordHash]
   );
   return result.rows[0];
-}
-
-function isGooglePresenterAllowed(email) {
-  const normalized = normalizeEmail(email);
-  const domain = normalized.split("@")[1] ?? "";
-  return GOOGLE_ALLOWED_EMAILS.has(normalized) || GOOGLE_ALLOWED_DOMAINS.has(domain);
 }
 
 async function updatePresenterGoogleProfile(existing, profile) {

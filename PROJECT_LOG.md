@@ -930,3 +930,115 @@
 
 ### Suggested Next Steps
 - Re-run the same desktop/mobile smoke checks after Railway promotes the merged commit.
+
+## [2026-07-10] — Move Pinboard Live to agaminggod.com
+### What Was Implemented
+- Connected `agaminggod.com` to the Railway `pinboard-live` production service.
+- Replaced the obsolete Vercel DNS targets with Cloudflare-proxied Railway routing and Railway ownership verification.
+- Removed `agaminggod.com` from the unrelated Vercel project and team domain registry.
+- Added an enabled Cloudflare page rule that permanently redirects `www.agaminggod.com/*` to `agaminggod.com/$1` while preserving query strings.
+- Updated Railway `PUBLIC_ORIGIN` and `GOOGLE_REDIRECT_URI` to use `https://agaminggod.com`, triggering a successful production redeploy.
+
+### Files Modified
+- `PROJECT_LOG.md` — recorded the corrected custom-domain migration and live verification.
+
+### Tests Run
+- Verified `https://agaminggod.com/`, `/health`, and `/presentation/login` return `200 OK` through Cloudflare and Railway.
+- Verified the live page title and presenter login UI identify the application as Pinboard Live.
+- Verified the Google sign-in control renders on the custom domain without browser console errors.
+- Verified `https://www.agaminggod.com/presentation/login?verify=www-redirect` returns a `301` to the equivalent apex URL and preserves its query string.
+- Verified Railway deployment `16a18a1f-5ea0-43b4-bd2f-752bd6a51f6b` completed successfully after the origin update.
+
+### Assumptions Made (flag these for review)
+- `agaminggod.com` is intended to be the canonical Pinboard production hostname.
+- The `www` hostname should redirect to the apex hostname rather than serve Pinboard independently.
+
+### Known Issues / Deferred
+- The legacy server-side Google OAuth start route still requires `GOOGLE_CLIENT_SECRET`; the active Google Identity credential flow uses `/api/auth/google` and renders correctly.
+
+### Suggested Next Steps
+- Use `https://agaminggod.com` for presenter, player, and shared live-session links going forward.
+
+## [2026-07-10] - Fix Google OAuth origin mismatch
+### What Was Implemented
+- Added `https://agaminggod.com` to the Google OAuth web client's authorized JavaScript origins.
+- Added `https://agaminggod.com/auth/google/callback` to the same client's authorized redirect URIs so the configured production callback matches Railway.
+
+### Files Modified
+- `PROJECT_LOG.md` - recorded the Google Cloud configuration repair and live verification.
+
+### Tests Run
+- Reopened the OAuth client after saving and verified both production URLs persisted in Google Cloud.
+- Clicked Continue with Google on `https://agaminggod.com/presentation/login` and verified Google opened the account chooser instead of returning `Error 400: origin_mismatch`.
+
+### Assumptions Made (flag these for review)
+- None. The failing origin and OAuth client ID were read directly from the live Google error and Railway configuration.
+
+### Known Issues / Deferred
+- Google states OAuth client changes can take from several minutes to a few hours to propagate globally, although the tested browser session accepted the new origin immediately.
+- Account selection was intentionally not completed during automated verification.
+
+### Suggested Next Steps
+- Sign in normally with the intended Google account from the presenter login screen.
+
+## [2026-07-11] — Open Google presenter registration
+### What Was Implemented
+- Removed the application-level Google email and domain allowlist so any valid Google account with a verified email can create a presenter account.
+- Removed the obsolete production allowlist startup requirement and documented the public Google registration behavior.
+- Added regression coverage using a verified Google identity outside the configured legacy allowlist.
+
+### Files Modified
+- `server.mjs` — removed Google presenter allowlist enforcement.
+- `test/integration/server-hardening.test.mjs` — verifies a newly seen, non-allowlisted Google account can authenticate.
+- `.env.example` — removed obsolete Google allowlist variables.
+- `README.md` — removed obsolete allowlist configuration guidance.
+- `PROJECT_LOG.md` — recorded the public registration fix and release verification.
+
+### Tests Run
+- Confirmed the new regression failed with `403` before the server change and passed afterward.
+- Ran `npm run check`: 41 unit tests and 14 integration tests passed; the PostgreSQL-only integration test was skipped because `TEST_DATABASE_URL` is not configured locally.
+- Removed `GOOGLE_ALLOWED_EMAILS` from the Railway production environment and verified it is absent from the resulting variable set.
+- Deployed Railway release `ce0d5eb2-6b27-4635-a995-fb84f0ebfd9a` successfully.
+- Verified the live `/health`, `/presentation/login`, and `/api/config` endpoints return `200`; PostgreSQL is healthy and the Google client remains configured.
+
+### Assumptions Made (flag these for review)
+- “Any user” means any Google account whose signed identity token contains a verified email address.
+
+### Known Issues / Deferred
+- Fully automated production account creation is not attempted because it would require an interactive Google identity and consent flow.
+
+### Suggested Next Steps
+- Monitor presenter and media usage now that account creation is public.
+## [2026-07-11] - Live game polish pass
+
+### What Was Implemented
+- Fixed the live countdown to tick in real time from the authoritative server-issued timer values.
+- Replaced the single post-answer message with 32 deterministic acknowledgements, and varied the correct-result subtitle as well.
+- Changed the finale podium to reveal third place, then second, then first, followed by confetti.
+- Added a presenter audio toggle, generated a compact MusicGPT audio pack, and wired the app to load it from `/audio/game-audio.json`.
+- Fixed Google OAuth remember-me on the callback flow while keeping the existing Google Identity credential path aligned with the same persistence choice.
+
+### Files Modified
+- `public/app.js` - live timer syncing, answer acknowledgement variation, podium reveal sequencing, presenter audio toggle, and audio playback hooks.
+- `public/client-state.js` - deterministic acknowledgement selection, live timer validation, podium order helper, and sound cooldown helper.
+- `public/styles.css` - dashboard audio toggle layout, podium reveal animation, confetti overlay, and reduced-motion handling.
+- `server.mjs` - Google callback persistence selection and static routes for the generated audio manifest and MP3 assets.
+- `test/unit/client-state.test.mjs` - regression coverage for timer validation, acknowledgement selection, podium order, and cooldown gating.
+- `test/integration/server-hardening.test.mjs` - Google callback persistence, audio manifest serving, and updated auth rate-limit coverage.
+- `scripts/generate-game-audio.mjs` - MusicGPT generation pipeline and local trimming for the committed audio pack.
+- `package.json` - script entry for regenerating the game audio pack.
+- `public/audio/game-audio.json` and `public/audio/*.mp3` - generated and trimmed audio assets plus manifest.
+- `README.md` and `.env.example` - pre-existing Google auth cleanup changes already present in the worktree.
+
+### Assumptions Made (flag these for review)
+- MusicGPT by ID responses expose `conversion_path_1`/`conversion_path_2` for MusicAI and the first version is the committed choice for each asset.
+- Trimming the generated MusicAI output with `ffmpeg` is acceptable to meet the 60-second loop and short SFX target.
+- The MusicGPT API did not return a usable actual cost figure, so the manifest keeps `actualSpendUsd` at `0`.
+
+### Known Issues / Deferred
+- The committed audio pack is trimmed from longer MusicAI source renders rather than being natively generated at exact lengths.
+- The generated pack should be auditioned in-app; levels and trim points may still need tuning if the playback feel is off.
+
+### Suggested Next Steps
+- Play the generated pack in the app and adjust volumes or trim points if the loop seams or SFX tails need refinement.
+- If the MusicGPT API later exposes stable actual-cost accounting, update the manifest metadata accordingly.

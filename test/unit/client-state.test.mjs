@@ -6,11 +6,15 @@ import {
   createAnswerAccessibleName,
   createClientId,
   createDraftSaveCoordinator,
+  getPodiumRevealOrder,
   removeQuizOption,
+  selectAnswerAcknowledgement,
+  shouldPlayGameSound,
   shouldAcceptLiveState,
   shouldShowLocalPresenterAuth,
   shouldPatchLiveState,
   shouldRetainResumeCredential,
+  isValidLiveTimer,
   toggleCorrectOption,
   togglePendingSelection
 } from "../../public/client-state.js";
@@ -177,6 +181,49 @@ test("Google sign-in replaces the visible local presenter form", () => {
   assert.equal(shouldShowLocalPresenterAuth(true, ""), true);
   assert.equal(shouldShowLocalPresenterAuth(true, "google-client-id"), false);
   assert.equal(shouldShowLocalPresenterAuth(false, ""), false);
+});
+
+test("live timer validation rejects invalid timestamps and durations", () => {
+  assert.equal(isValidLiveTimer(1_000, 30_000), true);
+  assert.equal(isValidLiveTimer(0, 1), true);
+  for (const [startedAt, durationMs] of [
+    [NaN, 30_000],
+    [1_000, NaN],
+    [Infinity, 30_000],
+    [1_000, Infinity],
+    [-1, 30_000],
+    [1_000, 0],
+    [1_000, -10]
+  ]) {
+    assert.equal(isValidLiveTimer(startedAt, durationMs), false, `${startedAt}:${durationMs}`);
+  }
+});
+
+test("answer acknowledgements are deterministic but varied", () => {
+  const first = selectAnswerAcknowledgement("question-1:player-1:red");
+  const same = selectAnswerAcknowledgement("question-1:player-1:red");
+  const variants = new Set([
+    first,
+    selectAnswerAcknowledgement("question-1:player-2:red"),
+    selectAnswerAcknowledgement("question-2:player-1:red"),
+    selectAnswerAcknowledgement("question-2:player-2:blue")
+  ]);
+
+  assert.equal(first, same);
+  assert.ok(variants.size >= 2);
+});
+
+test("podium reveal order is third, second, first", () => {
+  assert.deepEqual(getPodiumRevealOrder(false), [3, 2, 1]);
+  assert.deepEqual(getPodiumRevealOrder(true), [3, 2, 1]);
+});
+
+test("game sound cooldown gates rapid repeats", () => {
+  assert.equal(shouldPlayGameSound(undefined, 1_000, 500), true);
+  assert.equal(shouldPlayGameSound(1_000, 1_400, 500), false);
+  assert.equal(shouldPlayGameSound(1_000, 1_500, 500), true);
+  assert.equal(shouldPlayGameSound(1_000, 1_500, 0), false);
+  assert.equal(shouldPlayGameSound(1_000, Number.NaN, 500), false);
 });
 
 test("answer accessible names distinguish shape-only controls", () => {

@@ -9,6 +9,41 @@ const PLAYER_ROLE = "player";
 const RETRYABLE_RESUME_STATUSES = new Set([408, 425, 429]);
 const SERVER_ERROR_STATUS_MIN = 500;
 const SERVER_ERROR_STATUS_MAX = 599;
+const ANSWER_ACKNOWLEDGEMENTS = Object.freeze([
+  "Locked in.",
+  "Clean tap.",
+  "Nice pick.",
+  "Sharp move.",
+  "Smooth send.",
+  "Fast hands.",
+  "Good call.",
+  "Easy choice.",
+  "Crisp.",
+  "Dialed in.",
+  "Solid.",
+  "Quick click.",
+  "Ready.",
+  "Snappy.",
+  "All set.",
+  "Tight work.",
+  "Clear and quick.",
+  "On it.",
+  "Quick draw.",
+  "Pure reflex.",
+  "Proper.",
+  "Quick lock.",
+  "Smooth.",
+  "Tidy.",
+  "Fast lane.",
+  "Neat.",
+  "Composed.",
+  "Swift.",
+  "Tuned in.",
+  "Crisp work.",
+  "Buttoned up.",
+  "Locked and loaded."
+]);
+const PODIUM_REVEAL_ORDER = Object.freeze([3, 2, 1]);
 
 /**
  * Create a browser-safe UUID without falling back to weak randomness.
@@ -143,6 +178,66 @@ export function shouldRetainResumeCredential(failure) {
  */
 export function shouldShowLocalPresenterAuth(localAuthEnabled, googleClientId) {
   return localAuthEnabled === true && !googleClientId;
+}
+
+/**
+ * Return true when a live timer dataset is safe to render and update.
+ *
+ * @param {unknown} startedAt
+ * @param {unknown} durationMs
+ * @returns {boolean}
+ */
+export function isValidLiveTimer(startedAt, durationMs) {
+  return Number.isSafeInteger(startedAt)
+    && Number.isSafeInteger(durationMs)
+    && startedAt >= 0
+    && durationMs > 0;
+}
+
+/**
+ * Pick a deterministic upbeat answer acknowledgement without revealing correctness.
+ *
+ * @param {unknown} seed
+ * @returns {string}
+ */
+export function selectAnswerAcknowledgement(seed) {
+  const text = String(seed ?? "");
+  const index = hashSeedToIndex(text, ANSWER_ACKNOWLEDGEMENTS.length);
+  return ANSWER_ACKNOWLEDGEMENTS[index];
+}
+
+/**
+ * Return the staged podium reveal order.
+ *
+ * @param {boolean} reducedMotion
+ * @returns {number[]}
+ */
+export function getPodiumRevealOrder(reducedMotion) {
+  void reducedMotion;
+  return [...PODIUM_REVEAL_ORDER];
+}
+
+/**
+ * Return true when a sound effect may play without violating its cooldown.
+ *
+ * @param {unknown} lastPlayedAt
+ * @param {unknown} now
+ * @param {unknown} cooldownMs
+ * @returns {boolean}
+ */
+export function shouldPlayGameSound(lastPlayedAt, now, cooldownMs) {
+  const currentTime = Number(now);
+  const cooldown = Number(cooldownMs);
+  if (!Number.isFinite(currentTime) || !Number.isFinite(cooldown) || cooldown <= 0) {
+    return false;
+  }
+
+  const previousTime = Number(lastPlayedAt);
+  if (!Number.isFinite(previousTime)) {
+    return true;
+  }
+
+  return currentTime - previousTime >= cooldown;
 }
 
 const QUIZ_OPTION_LABELS = ["Red", "Blue", "Gold", "Green", "Purple", "Teal"];
@@ -281,6 +376,16 @@ function formatUuid(bytes) {
 function getFailureStatus(failure) {
   const value = typeof failure === "number" ? failure : failure?.status;
   return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/** @param {string} seed @param {number} length */
+function hashSeedToIndex(seed, length) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return length > 0 ? (hash >>> 0) % length : 0;
 }
 
 /** @param {unknown} value @param {string} label */

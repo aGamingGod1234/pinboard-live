@@ -3,7 +3,11 @@ import {
   createAnswerAccessibleName,
   createClientId,
   createDraftSaveCoordinator,
+  getPodiumRevealOrder,
+  isValidLiveTimer,
   removeQuizOption,
+  selectAnswerAcknowledgement,
+  shouldPlayGameSound,
   shouldAcceptLiveState,
   shouldPatchLiveState,
   shouldShowLocalPresenterAuth,
@@ -28,34 +32,16 @@ const COUNT_ANIMATION_MS = 720;
 const AUTO_SAVE_INTERVAL_MS = 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15 * 1000;
 const LIVE_TIMER_INTERVAL_MS = 1000;
+const LIVE_TIMER_URGENCY_THRESHOLD_MS = 5 * 1000;
 const MAX_TITLE_LENGTH = 120;
 const MAX_QUESTION_TEXT_LENGTH = 120;
 const MAX_OPTION_TEXT_LENGTH = 64;
 const DEFAULT_TIMER_SECONDS = 30;
 const MIN_TIMER_SECONDS = 5;
 const MAX_TIMER_SECONDS = 300;
-const MUSIC_STEP_MS = 420;
-const MUSIC_MASTER_GAIN = 0.035;
-const MUSIC_PATTERNS = {
-  lobby: {
-    waveform: "triangle",
-    notes: [64, 67, 71, 67, 62, 66, 69, 66],
-    bass: [40, 40, 38, 38],
-    duration: 0.24
-  },
-  question: {
-    waveform: "square",
-    notes: [72, 76, 79, 76, 74, 77, 81, 77],
-    bass: [48, 48, 50, 50],
-    duration: 0.16
-  },
-  intermission: {
-    waveform: "sine",
-    notes: [67, 71, 74, 71, 64, 67, 72, 67],
-    bass: [43, 43, 45, 45],
-    duration: 0.32
-  }
-};
+const GAME_AUDIO_MANIFEST_PATH = "/audio/game-audio.json";
+const GAME_AUDIO_DEFAULT_VOLUME = 0.85;
+const GAME_AUDIO_PODIUM_CONFETTI_DELAY_MS = 1_100;
 const PRESENTATION_PATH_PREFIX = "/presentation";
 const PRESENTATION_LOGIN_PATH = `${PRESENTATION_PATH_PREFIX}/login`;
 const PRESENTATION_HOME_PATH = `${PRESENTATION_PATH_PREFIX}/homepage`;
@@ -71,6 +57,7 @@ const PREVIEW_TONE_RULES = [
 const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const STORAGE_KEYS = {
   keepSignedIn: "pinboard.keepSignedIn",
+  presenterMusicEnabled: "pinboard.presenterMusicEnabled",
   playerPin: "pinboard.playerPin",
   pendingPresentationId: "pinboard.pendingPresentationId"
 };
@@ -125,12 +112,15 @@ const state = {
   notice: "",
   liveTimerInterval: null,
   presenterMusic: {
-    context: null,
-    master: null,
-    interval: null,
-    mode: "",
-    step: 0,
-    enabled: true
+    enabled: localStorage.getItem(STORAGE_KEYS.presenterMusicEnabled) !== "false",
+    unlocked: false,
+    manifest: null,
+    manifestPromise: null,
+    loopAudio: null,
+    loopMode: "",
+    lastEffectAt: new Map(),
+    timerUrgencyQuestionId: "",
+    podiumConfettiTimeout: null
   }
 };
 
@@ -258,6 +248,10 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "back-to-projects") await backToProjects();
     if (action === "sign-out-presenter") await signOutPresenter();
+    if (action === "toggle-presenter-audio") {
+      togglePresenterAudio();
+      return;
+    }
     if (action === "add-question") addQuestion();
     if (action === "select-question") selectQuestion(button.dataset.questionId);
     if (action === "remove-question") removeQuestion(button.dataset.questionId);
@@ -641,6 +635,20 @@ function renderTopbar() {
   `;
 }
 
+function renderPresenterAudioToggle(className = "") {
+  const enabled = state.presenterMusic.enabled;
+  const classes = ["glass-pill", className].filter(Boolean).join(" ");
+  return `
+    <button
+      type="button"
+      class="${classes}"
+      data-action="toggle-presenter-audio"
+      aria-pressed="${enabled ? "true" : "false"}"
+      aria-label="${enabled ? "Disable presenter audio" : "Enable presenter audio"}"
+    >${enabled ? "Audio on" : "Audio off"}</button>
+  `;
+}
+
 function renderMessages() {
   return `
     ${state.presentationConflict ? `
@@ -775,7 +783,10 @@ function renderPresenterDashboard() {
             <p class="eyebrow">Presenter projects</p>
             <h1>Welcome back, ${escapeHtml(displayName)}</h1>
           </div>
-          <button class="glass-pill dashboard-sign-out" type="button" data-action="sign-out-presenter">Sign out</button>
+          <div class="dashboard-actions">
+            ${renderPresenterAudioToggle("dashboard-audio-toggle")}
+            <button class="glass-pill dashboard-sign-out" type="button" data-action="sign-out-presenter">Sign out</button>
+          </div>
         </header>
         <div class="dashboard-grid">
           <button class="presentation-tile create-presentation-tile" type="button" data-action="create-presentation">
@@ -1113,15 +1124,19 @@ function renderPodium(players, pin = "podium") {
   const first = top[0];
   const second = top[1];
   const third = top[2];
+  const revealOrder = getPodiumRevealOrder(reducedMotionQuery.matches);
+  const revealDelays = new Map(revealOrder.map((place, index) => [place, index * 380]));
+  const confettiDelay = (revealDelays.get(1) ?? 0) + GAME_AUDIO_PODIUM_CONFETTI_DELAY_MS;
 
   return `
     <section class="podium-screen">
+      ${renderPodiumConfetti(confettiDelay)}
       <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span></div>
       <h1>Final podium</h1>
       <div class="podium-steps">
-        ${renderPodiumPlace(second, 2, pin)}
-        ${renderPodiumPlace(first, 1, pin)}
-        ${renderPodiumPlace(third, 3, pin)}
+        ${renderPodiumPlace(third, 3, pin, revealDelays.get(3) ?? 0)}
+        ${renderPodiumPlace(second, 2, pin, revealDelays.get(2) ?? 0)}
+        ${renderPodiumPlace(first, 1, pin, revealDelays.get(1) ?? 0)}
       </div>
       <div class="completion-actions">
         <button type="button" data-action="play-again">Play again</button>
@@ -1131,15 +1146,30 @@ function renderPodium(players, pin = "podium") {
   `;
 }
 
-function renderPodiumPlace(player, place, pin) {
+function renderPodiumPlace(player, place, pin, revealDelayMs = 0) {
   const playerKey = player?.id ?? player?.nickname ?? `empty-${place}`;
   return `
-    <div class="podium-place podium-place-${place}">
+    <div class="podium-place podium-place-${place}" style="--podium-reveal-delay:${revealDelayMs}ms;">
       <strong>${place}</strong>
       <span>${escapeHtml(formatLeaderboardName(player, "Empty"))}</span>
       ${renderCount(player?.score ?? 0, `podium:${pin}:${place}:${playerKey}`, "", "em")}
     </div>
   `;
+}
+
+function renderPodiumConfetti(delayMs) {
+  const pieces = Array.from({ length: 18 }, (_, index) => {
+    const x = (index * 11) % 100;
+    const hue = [12, 38, 54, 118, 184, 254][index % 6];
+    const width = 6 + (index % 3) * 2;
+    const height = 10 + (index % 4) * 2;
+    const tilt = -28 + (index % 7) * 9;
+    const drift = 34 + (index % 5) * 9;
+    const pieceDelay = delayMs + (index % 6) * 42;
+    return `<span style="--confetti-x:${x}%;--confetti-hue:${hue};--confetti-width:${width}px;--confetti-height:${height}px;--confetti-tilt:${tilt}deg;--confetti-drift:${drift}px;--confetti-delay:${pieceDelay}ms"></span>`;
+  }).join("");
+
+  return `<div class="podium-confetti" aria-hidden="true">${pieces}</div>`;
 }
 
 function renderPlayerWaiting(remote) {
@@ -1167,8 +1197,14 @@ function renderPlayerAnswerStage(remote) {
   const showResults = remote.phase === "results" || remote.phase === "ended";
 
   if (showResults) {
+    const resultSeed = [
+      question?.id ?? "question",
+      state.playerId ?? "player",
+      [...submittedIds].sort().join(","),
+      "result"
+    ].join(":");
     const outcomeCopy = {
-      correct: ["Correct", "Lightning fast and lightning smart."],
+      correct: ["Correct", selectAnswerAcknowledgement(resultSeed)],
       partial: ["Partially correct", "So close — you found part of it."],
       incorrect: ["Incorrect", "Better luck next time."],
       timeout: ["Time's up", "Lock it in sooner next time."]
@@ -1187,10 +1223,15 @@ function renderPlayerAnswerStage(remote) {
   }
 
   if (submittedIds.length > 0) {
+    const acknowledgement = selectAnswerAcknowledgement([
+      question?.id ?? "question",
+      state.playerId ?? "player",
+      [...submittedIds].sort().join(",")
+    ].join(":"));
     return `
       <section class="shader-screen shader-player player-stage player-submitted-stage">
         <div class="role-badge">Player</div>
-        <div class="player-result-card"><p class="eyebrow">Answer submitted</p><h1>Lightning fast</h1><p>But did you get it right?</p></div>
+        <div class="player-result-card"><p class="eyebrow">Answer submitted</p><h1>${escapeHtml(acknowledgement)}</h1><p>Your answer is locked in.</p></div>
       </section>`;
   }
 
@@ -1337,6 +1378,7 @@ function renderStageBar(remote, variant) {
       </button>
       <div class="stage-tools" aria-label="Host tools">
         <span class="role-badge role-badge-inline">Presenter</span>
+        ${renderPresenterAudioToggle("stage-audio-toggle")}
         ${renderCount(remote.playerCount, `stage-players:${remote.pin}`)}
         <button type="button" data-action="copy-link">Copy link</button>
         ${renderStagePrimaryButton(remote)}
@@ -1407,13 +1449,13 @@ function renderStageTimer(remote) {
   }
 
   const durationMs = getQuestionTimerDurationMs(remote.currentQuestion);
-  if (remote.phase !== "answering" || !remote.openedAt) {
+  const startedAt = Number(remote.openedAt);
+  if (remote.phase !== "answering" || !isValidLiveTimer(startedAt, durationMs)) {
     return `<span class="stage-timer">${formatCountdownTime(durationMs)}</span>`;
   }
 
-  const startedAt = Number(remote.openedAt);
   const remainingMs = getQuestionTimerRemainingMs(startedAt, durationMs);
-  return `<div class="stage-timer stage-timer-prominent" data-live-timer-started-at="${startedAt}" data-live-timer-duration-ms="${durationMs}" aria-label="Time remaining">${formatCountdownTime(remainingMs)}</div>`;
+  return `<div class="stage-timer stage-timer-prominent" data-live-timer-question-id="${escapeHtml(remote.currentQuestion.id)}" data-live-timer-started-at="${startedAt}" data-live-timer-duration-ms="${durationMs}" aria-label="Time remaining">${formatCountdownTime(remainingMs)}</div>`;
 }
 
 async function loadPublicConfig() {
@@ -2207,6 +2249,7 @@ function connectEvents(pin, role) {
       return leavePresentationWithNotice("The presenter has left the presentation.");
     }
 
+    const previousState = state.remote;
     const patchInPlace = shouldPatchLiveState(state.remote, nextState, role);
     if (!applyRemoteState(nextState)) {
       return;
@@ -2214,6 +2257,7 @@ function connectEvents(pin, role) {
     if (state.notice === LIVE_RECONNECT_NOTICE) {
       state.notice = "";
     }
+    syncPresenterAudioStateChange(previousState, nextState);
     if (patchInPlace) {
       patchPlayerLiveState(nextState);
       syncMessages();
@@ -2226,7 +2270,11 @@ function connectEvents(pin, role) {
     if (!state.remote || answer.pin !== state.remote.pin || Number(answer.version) < Number(state.remote.version)) {
       return;
     }
+    const previousAnswerCount = Number(state.remote.answerCount) || 0;
     applyCompactAnswerState(answer);
+    if (role === "host" && Number.isFinite(Number(answer.answerCount)) && Number(answer.answerCount) > previousAnswerCount) {
+      playPresenterAudioEffect("answerSubmit");
+    }
     render();
   });
   state.eventSource.onerror = () => {
@@ -2991,23 +3039,46 @@ function getQuestionTimerRemainingMs(startedAt, durationMs) {
 }
 
 function syncLiveTimers() {
-  const timers = [...document.querySelectorAll("[data-live-timer-started-at]")];
-  if (!timers.length) {
-    clearLiveTimerInterval();
-    return;
-  }
-
   const updateTimers = () => {
+    const timers = [...document.querySelectorAll("[data-live-timer-started-at]")];
+    let sawValidTimer = false;
+    const now = Date.now();
     for (const timer of timers) {
       const startedAt = Number(timer.dataset.liveTimerStartedAt);
       const durationMs = Number(timer.dataset.liveTimerDurationMs);
-      timer.textContent = formatCountdownTime(getQuestionTimerRemainingMs(startedAt, durationMs));
+      if (!isValidLiveTimer(startedAt, durationMs)) {
+        continue;
+      }
+      sawValidTimer = true;
+      const remainingMs = getQuestionTimerRemainingMs(startedAt, durationMs);
+      timer.textContent = formatCountdownTime(remainingMs);
+
+      const questionId = timer.dataset.liveTimerQuestionId ?? "";
+      if (!questionId || state.mode !== "presenter" || !isPresenterAuthenticated() || !state.presenterMusic.enabled || !state.presenterMusic.unlocked) {
+        continue;
+      }
+      if (remainingMs <= LIVE_TIMER_URGENCY_THRESHOLD_MS && state.presenterMusic.timerUrgencyQuestionId !== questionId) {
+        state.presenterMusic.timerUrgencyQuestionId = questionId;
+        playPresenterAudioEffect("timerUrgency", { now });
+      }
     }
+
+    if (!sawValidTimer) {
+      clearLiveTimerInterval();
+      state.presenterMusic.timerUrgencyQuestionId = "";
+    }
+    return sawValidTimer;
   };
 
   clearLiveTimerInterval();
-  updateTimers();
-  state.liveTimerInterval = window.setInterval(updateTimers, LIVE_TIMER_INTERVAL_MS);
+  if (!updateTimers()) {
+    return;
+  }
+  state.liveTimerInterval = window.setInterval(() => {
+    if (!updateTimers()) {
+      clearLiveTimerInterval();
+    }
+  }, LIVE_TIMER_INTERVAL_MS);
 }
 
 function clearLiveTimerInterval() {
@@ -3029,44 +3100,51 @@ function unlockPresenterMusic() {
     return;
   }
 
-  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextCtor) {
-    return;
-  }
-
-  if (!state.presenterMusic.context) {
-    const context = new AudioContextCtor();
-    const master = context.createGain();
-    master.gain.value = MUSIC_MASTER_GAIN;
-    master.connect(context.destination);
-    state.presenterMusic.context = context;
-    state.presenterMusic.master = master;
-  }
-
-  if (state.presenterMusic.context.state !== "running") {
-    void state.presenterMusic.context.resume().then(syncPresenterMusic).catch(() => {});
-  }
+  state.presenterMusic.unlocked = true;
+  void ensurePresenterAudioManifest().then(() => syncPresenterMusic()).catch(() => {});
 }
 
-function syncPresenterMusic() {
+function togglePresenterAudio() {
+  state.presenterMusic.enabled = !state.presenterMusic.enabled;
+  localStorage.setItem(STORAGE_KEYS.presenterMusicEnabled, state.presenterMusic.enabled ? "true" : "false");
+  if (!state.presenterMusic.enabled) {
+    stopPresenterMusic();
+  } else {
+    state.presenterMusic.unlocked = true;
+    unlockPresenterMusic();
+  }
+  render();
+}
+
+async function syncPresenterMusic() {
   const mode = getPresenterMusicMode();
-  if (!mode || !state.presenterMusic.enabled) {
+  if (!mode || !state.presenterMusic.enabled || !state.presenterMusic.unlocked || state.mode !== "presenter" || !isPresenterAuthenticated()) {
     stopPresenterMusic();
     return;
   }
 
-  if (!state.presenterMusic.context || state.presenterMusic.context.state !== "running") {
+  const manifest = await ensurePresenterAudioManifest();
+  if (!manifest) {
     return;
   }
 
-  if (state.presenterMusic.mode !== mode) {
-    state.presenterMusic.mode = mode;
-    state.presenterMusic.step = 0;
+  const track = manifest.loops?.[mode];
+  if (!track?.src) {
+    stopPresenterMusic();
+    return;
   }
 
-  if (!state.presenterMusic.interval) {
-    playPresenterMusicStep();
-    state.presenterMusic.interval = window.setInterval(playPresenterMusicStep, MUSIC_STEP_MS);
+  if (state.presenterMusic.loopMode !== mode || !state.presenterMusic.loopAudio) {
+    stopPresenterLoopAudio();
+    state.presenterMusic.loopMode = mode;
+    state.presenterMusic.loopAudio = createPlayableAudio(track.src, {
+      loop: true,
+      volume: track.volume ?? GAME_AUDIO_DEFAULT_VOLUME
+    });
+  }
+
+  if (state.presenterMusic.loopAudio?.paused) {
+    void playAudioElement(state.presenterMusic.loopAudio);
   }
 }
 
@@ -3076,60 +3154,184 @@ function getPresenterMusicMode() {
   }
 
   if (state.remote.phase === "lobby") return "lobby";
-  if (state.remote.phase === "question" || state.remote.phase === "answering") return "question";
-  if (state.remote.phase === "results" || state.remote.phase === "ended") return "intermission";
-  return "";
+  return "question";
 }
 
 function stopPresenterMusic() {
-  if (state.presenterMusic.interval) {
-    window.clearInterval(state.presenterMusic.interval);
-    state.presenterMusic.interval = null;
-  }
-  state.presenterMusic.mode = "";
-  state.presenterMusic.step = 0;
+  stopPresenterLoopAudio();
+  clearPresenterAudioTimers();
+  state.presenterMusic.loopMode = "";
 }
 
-function playPresenterMusicStep() {
-  const music = state.presenterMusic;
-  const pattern = MUSIC_PATTERNS[music.mode];
-  if (!music.context || !music.master || !pattern) {
-    stopPresenterMusic();
+function clearPresenterAudioTimers() {
+  if (state.presenterMusic.podiumConfettiTimeout) {
+    window.clearTimeout(state.presenterMusic.podiumConfettiTimeout);
+    state.presenterMusic.podiumConfettiTimeout = null;
+  }
+}
+
+async function ensurePresenterAudioManifest() {
+  if (!state.presenterMusic.enabled || !state.presenterMusic.unlocked || state.mode !== "presenter" || !isPresenterAuthenticated()) {
+    return null;
+  }
+  if (state.presenterMusic.manifest) {
+    return state.presenterMusic.manifest;
+  }
+  if (state.presenterMusic.manifestPromise) {
+    return state.presenterMusic.manifestPromise;
+  }
+
+  state.presenterMusic.manifestPromise = fetch(GAME_AUDIO_MANIFEST_PATH, { credentials: "same-origin" })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error("Presenter audio manifest is unavailable.");
+      }
+      return response.json();
+    })
+    .then((manifest) => {
+      state.presenterMusic.manifest = normalizePresenterAudioManifest(manifest);
+      return state.presenterMusic.manifest;
+    })
+    .catch(() => null)
+    .finally(() => {
+      state.presenterMusic.manifestPromise = null;
+    });
+
+  return state.presenterMusic.manifestPromise;
+}
+
+function normalizePresenterAudioManifest(manifest) {
+  const loops = {};
+  for (const mode of ["lobby", "question"]) {
+    const track = manifest?.loops?.[mode];
+    if (typeof track?.src !== "string" || !track.src) {
+      continue;
+    }
+    loops[mode] = {
+      src: track.src,
+      volume: clampAudioVolume(track.volume)
+    };
+  }
+
+  const effects = {};
+  for (const effectName of ["answerSubmit", "answerAccepted", "timerUrgency", "leaderboardTransition", "podiumReveal", "confettiCelebration"]) {
+    const effect = manifest?.effects?.[effectName];
+    if (typeof effect?.src !== "string" || !effect.src) {
+      continue;
+    }
+    effects[effectName] = {
+      src: effect.src,
+      cooldownMs: normalizeAudioCooldown(effect.cooldownMs),
+      volume: clampAudioVolume(effect.volume)
+    };
+  }
+
+  return { loops, effects };
+}
+
+function normalizeAudioCooldown(value) {
+  const cooldown = Number(value);
+  return Number.isFinite(cooldown) && cooldown >= 0 ? cooldown : 0;
+}
+
+function clampAudioVolume(value) {
+  const volume = Number(value);
+  if (!Number.isFinite(volume)) {
+    return GAME_AUDIO_DEFAULT_VOLUME;
+  }
+  return Math.min(1, Math.max(0, volume));
+}
+
+function createPlayableAudio(src, options = {}) {
+  const audio = new Audio(src);
+  audio.preload = "auto";
+  audio.loop = options.loop === true;
+  audio.volume = clampAudioVolume(options.volume);
+  return audio;
+}
+
+function stopPresenterLoopAudio() {
+  const audio = state.presenterMusic.loopAudio;
+  if (audio) {
+    audio.pause();
+    audio.currentTime = 0;
+  }
+  state.presenterMusic.loopAudio = null;
+}
+
+function getAudioEffect(effectName) {
+  return state.presenterMusic.manifest?.effects?.[effectName] ?? null;
+}
+
+function playPresenterAudioEffect(effectName, { now = Date.now() } = {}) {
+  if (!state.presenterMusic.enabled || !state.presenterMusic.unlocked || state.mode !== "presenter" || !isPresenterAuthenticated()) {
     return;
   }
 
-  const step = music.step;
-  const note = pattern.notes[step % pattern.notes.length];
-  const bass = pattern.bass[Math.floor(step / 4) % pattern.bass.length];
-  const now = music.context.currentTime;
-  playInstrumentTone(noteToFrequency(note), now, pattern.duration, pattern.waveform, 0.82);
-  if (step % 4 === 0) {
-    playInstrumentTone(noteToFrequency(bass), now, 0.34, "sine", 0.55);
-  }
-  music.step += 1;
-}
-
-function playInstrumentTone(frequency, startTime, duration, waveform, volume) {
-  const music = state.presenterMusic;
-  if (!music.context || !music.master) {
+  const effect = getAudioEffect(effectName);
+  if (!effect?.src) {
     return;
   }
 
-  const oscillator = music.context.createOscillator();
-  const envelope = music.context.createGain();
-  oscillator.type = waveform;
-  oscillator.frequency.setValueAtTime(frequency, startTime);
-  envelope.gain.setValueAtTime(0.0001, startTime);
-  envelope.gain.exponentialRampToValueAtTime(volume, startTime + 0.025);
-  envelope.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
-  oscillator.connect(envelope);
-  envelope.connect(music.master);
-  oscillator.start(startTime);
-  oscillator.stop(startTime + duration + 0.04);
+  const lastPlayedAt = state.presenterMusic.lastEffectAt.get(effectName);
+  if (!shouldPlayGameSound(lastPlayedAt, now, effect.cooldownMs ?? 0)) {
+    return;
+  }
+
+  state.presenterMusic.lastEffectAt.set(effectName, now);
+  void playAudioElement(createPlayableAudio(effect.src, { volume: effect.volume ?? GAME_AUDIO_DEFAULT_VOLUME }));
 }
 
-function noteToFrequency(note) {
-  return 440 * (2 ** ((note - 69) / 12));
+function playAudioElement(audio) {
+  if (!(audio instanceof HTMLAudioElement)) {
+    return Promise.resolve();
+  }
+
+  const playback = audio.play();
+  if (playback && typeof playback.catch === "function") {
+    return playback.catch(() => undefined);
+  }
+  return Promise.resolve();
+}
+
+function syncPresenterAudioStateChange(previousState, nextState) {
+  if (!state.presenterMusic.enabled || !state.presenterMusic.unlocked || state.mode !== "presenter" || !isPresenterAuthenticated()) {
+    return;
+  }
+
+  const previousPhase = previousState?.phase ?? "";
+  const nextPhase = nextState?.phase ?? "";
+  const previousQuestionId = previousState?.currentQuestion?.id ?? "";
+  const nextQuestionId = nextState?.currentQuestion?.id ?? "";
+  const previousAnswerCount = Number(previousState?.answerCount ?? 0);
+  const nextAnswerCount = Number(nextState?.answerCount ?? 0);
+
+  if (nextPhase !== "ended") {
+    clearPresenterAudioTimers();
+  }
+
+  if (Number.isFinite(previousAnswerCount) && Number.isFinite(nextAnswerCount) && nextAnswerCount > previousAnswerCount) {
+    playPresenterAudioEffect("answerAccepted");
+  }
+
+  if (nextPhase === "leaderboard" && previousPhase !== "leaderboard") {
+    playPresenterAudioEffect("leaderboardTransition");
+  }
+
+  if (nextPhase === "ended" && previousPhase !== "ended") {
+    playPresenterAudioEffect("podiumReveal");
+    clearPresenterAudioTimers();
+    state.presenterMusic.podiumConfettiTimeout = window.setTimeout(() => {
+      state.presenterMusic.podiumConfettiTimeout = null;
+      playPresenterAudioEffect("confettiCelebration");
+    }, GAME_AUDIO_PODIUM_CONFETTI_DELAY_MS);
+  }
+
+  if (nextPhase !== "answering" || nextQuestionId !== previousQuestionId) {
+    state.presenterMusic.timerUrgencyQuestionId = "";
+  }
+
+  void syncPresenterMusic();
 }
 
 function formatPin(pin) {
