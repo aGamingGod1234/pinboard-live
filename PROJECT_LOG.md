@@ -1052,7 +1052,7 @@
 - Removed podium/confetti inline styles that violated the production CSP and moved the animation values into the external stylesheet.
 - Made Playwright use a validated configurable port, repaired the `@live` gate, refreshed stale acknowledgement assertions, and added presenter/player reload resilience coverage with failure-safe session cleanup.
 - Added a credential-safe 75-player readiness harness covering joins, 75 SSE streams, 20% reconnects, media bursts, two 75-answer rounds, state/version convergence, soak time, and automatic session/media/logout cleanup.
-- Deployed Railway release `e9572586-190e-4a6f-962a-058857f8222b` to production.
+- Deployed Railway release `e9572586-190e-4a6f-962a-058857f8222b` and the cross-runtime timeout follow-up `35459ba7-6e8f-46af-8e58-488a7e588437` to production.
 
 ### Files Modified
 - `server.mjs` — active-host recovery API and queued media-request integration.
@@ -1074,6 +1074,7 @@
 - Local readiness run: 75 players, 150/150 answers, 15/15 reconnects, 225 media fetches, and zero recorded errors.
 - Production readiness run against `https://agaminggod.com`: 75 players and SSE streams, 150/150 answers, 15/15 reconnects, 225 media fetches, 120-second soak, 552 requests, zero `429`/`5xx`/network/protocol/stream/cleanup errors, p95 `832.57 ms`, max `1035.16 ms`.
 - Post-load production checks: `/health` returned `{"ok":true,"database":"postgres"}`, presenter login returned `200`, deployment status remained `SUCCESS`, and deployment logs contained no application errors or restarts.
+- GitHub CI run `29239606778` passed on Node 22 with PostgreSQL and Chromium: dependency audit, complete checks, the PostgreSQL integration case, and all browser tests were green.
 - Independent final review found no actionable P0/P1 issues.
 
 ### Assumptions Made (flag these for review)
