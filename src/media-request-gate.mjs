@@ -196,7 +196,6 @@ export class MediaRequestGate {
     entry.timeout = setTimeout(() => {
       this.#rejectQueuedEntry(entry, MEDIA_REQUEST_GATE_ERROR_CODES.WAIT_TIMEOUT);
     }, timeoutMs);
-    entry.timeout.unref?.();
   }
 
   #rejectQueuedEntry(entry, code) {
