@@ -170,14 +170,14 @@ export function shouldRetainResumeCredential(failure) {
 }
 
 /**
- * Keep the password form as a fallback only when Google sign-in is unavailable.
+ * Keep the password form available whenever local presenter authentication is enabled.
  *
  * @param {boolean} localAuthEnabled
  * @param {string} googleClientId
  * @returns {boolean}
  */
 export function shouldShowLocalPresenterAuth(localAuthEnabled, googleClientId) {
-  return localAuthEnabled === true && !googleClientId;
+  return localAuthEnabled === true;
 }
 
 /**

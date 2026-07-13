@@ -27,6 +27,11 @@ import {
   scoreCurrentQuestion as scoreCurrentQuestionDomain,
   setPlayerPresence
 } from "./src/session-domain.mjs";
+import {
+  MediaRequestGate,
+  MediaRequestGateError,
+  MEDIA_REQUEST_GATE_ERROR_CODES
+} from "./src/media-request-gate.mjs";
 
 const BYTE = 1;
 const KIB = 1024 * BYTE;
@@ -105,6 +110,9 @@ const QR_REQUEST_RATE_CAPACITY = 30;
 const PLAYER_RATE_REFILL_INTERVAL_MS = 60_000;
 const MAX_CONCURRENT_MEDIA_REQUESTS = 8;
 const MAX_CONCURRENT_MEDIA_REQUESTS_PER_PRINCIPAL = 2;
+const MAX_QUEUED_MEDIA_REQUESTS = 128;
+const MAX_QUEUED_MEDIA_REQUESTS_PER_PRINCIPAL = 2;
+const MEDIA_QUEUE_WAIT_TIMEOUT_MS = 30_000;
 const MEDIA_RESPONSE_TIMEOUT_MS = 60_000;
 const MEDIA_STREAM_CHUNK_BYTES = 1 * MIB;
 const MAX_CONCURRENT_MEDIA_UPLOADS = 2;
@@ -233,8 +241,13 @@ const qrRequestRateLimiter = createTokenBucketLimiter({
   refillTokens: QR_REQUEST_RATE_CAPACITY,
   refillIntervalMs: PLAYER_RATE_REFILL_INTERVAL_MS
 });
-const activeMediaRequestsByPrincipal = new Map();
-let activeMediaRequestCount = 0;
+const mediaRequestGate = new MediaRequestGate({
+  maxActive: MAX_CONCURRENT_MEDIA_REQUESTS,
+  maxActivePerPrincipal: MAX_CONCURRENT_MEDIA_REQUESTS_PER_PRINCIPAL,
+  maxQueued: MAX_QUEUED_MEDIA_REQUESTS,
+  maxQueuedPerPrincipal: MAX_QUEUED_MEDIA_REQUESTS_PER_PRINCIPAL,
+  defaultWaitTimeoutMs: MEDIA_QUEUE_WAIT_TIMEOUT_MS
+});
 const activeMediaUploadsByPresenter = new Map();
 let activeMediaUploadCount = 0;
 
@@ -517,6 +530,11 @@ async function routeRequest(request, response) {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/sessions/active") {
+    await handleGetActiveSession(request, response);
+    return;
+  }
+
   const qrMatch = url.pathname.match(/^\/api\/sessions\/(\d{6})\/qr\.svg$/);
   if (request.method === "GET" && qrMatch) {
     await handleSessionQr(request, response, qrMatch[1]);
@@ -736,9 +754,14 @@ function acquireMediaUpload(presenterId) {
 }
 
 async function handleGetMedia(request, response, mediaId) {
-  const release = acquireMediaRequest(request);
-  response.setTimeout(MEDIA_RESPONSE_TIMEOUT_MS, () => response.destroy());
+  const queueAbortController = new AbortController();
+  const abortQueuedRequest = () => queueAbortController.abort();
+  request.once("aborted", abortQueuedRequest);
+  response.once("close", abortQueuedRequest);
+  let release = null;
   try {
+    release = await acquireMediaRequest(request, { signal: queueAbortController.signal });
+    response.setTimeout(MEDIA_RESPONSE_TIMEOUT_MS, () => response.destroy());
     const asset = await getMediaAssetMetadata(mediaId);
     if (!asset) {
       throw new HttpError(404, "Media was not found.", "MEDIA_NOT_FOUND");
@@ -746,36 +769,32 @@ async function handleGetMedia(request, response, mediaId) {
     await authorizeMediaRequest(request, asset);
     await sendMediaAsset(request, response, asset);
   } finally {
-    release();
+    request.off("aborted", abortQueuedRequest);
+    response.off("close", abortQueuedRequest);
+    release?.();
   }
 }
 
-function acquireMediaRequest(request) {
+async function acquireMediaRequest(request, options = {}) {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   const principal = getRequestPrincipalKey(request, url);
-  const principalCount = activeMediaRequestsByPrincipal.get(principal) ?? 0;
-  if (activeMediaRequestCount >= MAX_CONCURRENT_MEDIA_REQUESTS
-    || principalCount >= MAX_CONCURRENT_MEDIA_REQUESTS_PER_PRINCIPAL) {
-    const error = new HttpError(429, "Too many media requests are active. Please retry.", "MEDIA_CONCURRENCY_LIMIT");
-    error.retryAfterSeconds = 1;
-    throw error;
+  try {
+    return await mediaRequestGate.acquire(principal, options);
+  } catch (error) {
+    if (!(error instanceof MediaRequestGateError)) {
+      throw error;
+    }
+    if (error.code === MEDIA_REQUEST_GATE_ERROR_CODES.ABORTED) {
+      throw new HttpError(499, "The media request was cancelled.", "MEDIA_REQUEST_ABORTED");
+    }
+    const queueError = new HttpError(
+      503,
+      "Media is temporarily busy. Please retry.",
+      error.code === MEDIA_REQUEST_GATE_ERROR_CODES.WAIT_TIMEOUT ? "MEDIA_QUEUE_TIMEOUT" : "MEDIA_QUEUE_FULL"
+    );
+    queueError.retryAfterSeconds = 1;
+    throw queueError;
   }
-  activeMediaRequestCount += 1;
-  activeMediaRequestsByPrincipal.set(principal, principalCount + 1);
-  let released = false;
-  return () => {
-    if (released) {
-      return;
-    }
-    released = true;
-    activeMediaRequestCount = Math.max(0, activeMediaRequestCount - 1);
-    const remaining = (activeMediaRequestsByPrincipal.get(principal) ?? 1) - 1;
-    if (remaining <= 0) {
-      activeMediaRequestsByPrincipal.delete(principal);
-    } else {
-      activeMediaRequestsByPrincipal.set(principal, remaining);
-    }
-  };
 }
 
 async function handleDeleteMedia(request, response, mediaId) {
@@ -831,6 +850,21 @@ async function handleCreateSession(request, response) {
   await persistSession(session);
   sendJson(response, 201, {
     pin,
+    session: getStateForRole(session, "host", null)
+  });
+}
+
+async function handleGetActiveSession(request, response) {
+  const presenter = await requireCurrentPresenter(request);
+  const session = await findLatestActiveSessionForPresenter(presenter.id);
+  if (!session) {
+    sendJson(response, 200, { pin: null, session: null });
+    return;
+  }
+
+  scheduleQuestionTimer(session);
+  sendJson(response, 200, {
+    pin: session.pin,
     session: getStateForRole(session, "host", null)
   });
 }
@@ -3535,6 +3569,26 @@ async function getSession(pin) {
     scheduleQuestionTimer(session);
   }
   return session;
+}
+
+async function findLatestActiveSessionForPresenter(presenterId) {
+  if (!database) {
+    return [...sessions.values()]
+      .filter((session) => session.presenterId === presenterId && session.phase !== "ended" && session.endedAt == null)
+      .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null;
+  }
+
+  const result = await database.query(
+    `SELECT pin FROM live_sessions
+     WHERE snapshot->>'presenterId' = $1
+       AND snapshot->>'phase' IS DISTINCT FROM 'ended'
+       AND snapshot->>'endedAt' IS NULL
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [presenterId]
+  );
+  const pin = result.rows[0]?.pin;
+  return typeof pin === "string" ? getSession(pin) : null;
 }
 
 function normalizePin(pin) {

@@ -177,9 +177,9 @@ test("retryable resume failures retain the saved credential", () => {
   }
 });
 
-test("Google sign-in replaces the visible local presenter form", () => {
+test("local presenter sign-in remains available as a Google fallback", () => {
   assert.equal(shouldShowLocalPresenterAuth(true, ""), true);
-  assert.equal(shouldShowLocalPresenterAuth(true, "google-client-id"), false);
+  assert.equal(shouldShowLocalPresenterAuth(true, "google-client-id"), true);
   assert.equal(shouldShowLocalPresenterAuth(false, ""), false);
 });
 

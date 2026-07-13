@@ -240,6 +240,51 @@ test("cookie-authenticated session lifecycle is durable across SSE disconnects",
   assert.equal(confirmedEnd.session.phase, "ended");
 });
 
+test("authenticated presenter can recover the latest active hosted session", async () => {
+  const presenter = await loginPresenter();
+  const createResponse = await postJson(
+    "/api/sessions",
+    {
+      title: "Host recovery integration",
+      questions: [{
+        id: randomUUID(),
+        kind: "slide",
+        text: "Recovery slide",
+        points: 0,
+        timerSeconds: 0,
+        options: [],
+        correctOptionIds: [],
+        media: null
+      }]
+    },
+    presenterMutationHeaders(presenter)
+  );
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const recoveryResponse = await fetch(`${baseUrl}/api/sessions/active`, {
+    headers: { Cookie: presenter.cookie }
+  });
+  assert.equal(recoveryResponse.status, 200);
+  const recovered = await recoveryResponse.json();
+  assert.equal(recovered.pin, created.pin);
+  assert.equal(recovered.session.pin, created.pin);
+  assert.equal(recovered.session.phase, "lobby");
+
+  const endResponse = await postJson(
+    `/api/sessions/${created.pin}/end`,
+    { discardActiveRound: true },
+    presenterMutationHeaders(presenter)
+  );
+  assert.equal(endResponse.status, 200);
+
+  const emptyResponse = await fetch(`${baseUrl}/api/sessions/active`, {
+    headers: { Cookie: presenter.cookie }
+  });
+  assert.equal(emptyResponse.status, 200);
+  assert.deepEqual(await emptyResponse.json(), { pin: null, session: null });
+});
+
 test("presentation saves reject a stale revision", async () => {
   const presenter = await loginPresenter();
   const createResponse = await postJson("/api/presentations", {}, presenterMutationHeaders(presenter));

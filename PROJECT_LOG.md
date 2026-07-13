@@ -1042,3 +1042,48 @@
 ### Suggested Next Steps
 - Play the generated pack in the app and adjust volumes or trim points if the loop seams or SFX tails need refinement.
 - If the MusicGPT API later exposes stable actual-cost accounting, update the manifest metadata accordingly.
+
+## [2026-07-13] — Live presentation battle-readiness release
+
+### What Was Implemented
+- Added authenticated presenter recovery for the latest active live session, including recovery when the independent presentation list is temporarily unavailable.
+- Replaced immediate media-concurrency rejection with a bounded, fair, abortable queue so simultaneous participant image requests wait for capacity instead of receiving a burst-time `429`.
+- Kept local email/password authentication available alongside Google and added a handled fallback when the Google Identity script cannot load.
+- Removed podium/confetti inline styles that violated the production CSP and moved the animation values into the external stylesheet.
+- Made Playwright use a validated configurable port, repaired the `@live` gate, refreshed stale acknowledgement assertions, and added presenter/player reload resilience coverage with failure-safe session cleanup.
+- Added a credential-safe 75-player readiness harness covering joins, 75 SSE streams, 20% reconnects, media bursts, two 75-answer rounds, state/version convergence, soak time, and automatic session/media/logout cleanup.
+- Deployed Railway release `e9572586-190e-4a6f-962a-058857f8222b` to production.
+
+### Files Modified
+- `server.mjs` — active-host recovery API and queued media-request integration.
+- `src/media-request-gate.mjs` — bounded fair media request gate.
+- `public/app.js` — presenter recovery, authentication fallback, dashboard-failure resilience, and CSP-safe podium markup.
+- `public/client-state.js` — persistent local-auth fallback decision.
+- `public/styles.css` — CSP-safe podium and confetti animation values.
+- `playwright.config.mjs` — validated alternate-port E2E configuration.
+- `scripts/live-readiness.mjs` — local/production 75-player verification and cleanup runner.
+- `test/integration/server-hardening.test.mjs` and `test/integration/session-lifecycle.test.mjs` — media burst and active-host recovery regressions.
+- `test/unit/client-state.test.mjs`, `test/unit/media-request-gate.test.mjs`, and `test/unit/live-readiness.test.mjs` — auth, queue, harness security, and cleanup coverage.
+- `tests/e2e/live-session.desktop.spec.mjs` and `tests/e2e/player.mobile.spec.mjs` — host/player recovery, Google failure fallback, live tags, strict runtime checks, and test isolation.
+- `PROJECT_LOG.md` — release evidence and residual risk record.
+
+### Tests Run
+- `npm run check`: 72 unit tests passed; 18 applicable integration tests passed; 1 PostgreSQL-only integration test skipped locally because `TEST_DATABASE_URL` was absent; all syntax checks passed.
+- `npm run test:e2e` on isolated port `4298`: all 9 browser tests passed across desktop presenter and mobile player projects with zero unexpected runtime errors.
+- `npm audit --omit=dev --audit-level=high`: 0 vulnerabilities.
+- Local readiness run: 75 players, 150/150 answers, 15/15 reconnects, 225 media fetches, and zero recorded errors.
+- Production readiness run against `https://agaminggod.com`: 75 players and SSE streams, 150/150 answers, 15/15 reconnects, 225 media fetches, 120-second soak, 552 requests, zero `429`/`5xx`/network/protocol/stream/cleanup errors, p95 `832.57 ms`, max `1035.16 ms`.
+- Post-load production checks: `/health` returned `{"ok":true,"database":"postgres"}`, presenter login returned `200`, deployment status remained `SUCCESS`, and deployment logs contained no application errors or restarts.
+- Independent final review found no actionable P0/P1 issues.
+
+### Assumptions Made (flag these for review)
+- A 75-player production test provides sufficient headroom for the stated 50+ attendee presentation target.
+- `https://agaminggod.com` and the linked Railway `pinboard-live` production service are the intended live targets.
+
+### Known Issues / Deferred
+- Production currently uses one Railway application replica. The validated instance handled the target load, but infrastructure-level failover during a provider or process outage was not proven by this release.
+- The PostgreSQL-only integration case was not run locally; it remains covered by CI where `TEST_DATABASE_URL` is configured.
+
+### Suggested Next Steps
+- Avoid deployments or production configuration changes during the live presentation.
+- Keep the Railway deployment view available during the event; if additional infrastructure redundancy is desired, validate a multi-replica configuration in a separate cost-approved change.

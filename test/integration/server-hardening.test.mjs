@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { get as httpGet } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { after, before, test } from "node:test";
 
@@ -10,6 +11,10 @@ const GOOGLE_TEST_CLIENT_ID = "hardening-google-client";
 const GOOGLE_TEST_EMAIL = "google-hardening@example.test";
 const PUBLIC_GOOGLE_TEST_EMAIL = "new-presenter@gmail.com";
 const GOOGLE_TEST_KID = "hardening-google-key";
+const MEDIA_BURST_REQUEST_COUNT = 9;
+const MEDIA_BURST_HELD_REQUEST_COUNT = MEDIA_BURST_REQUEST_COUNT - 1;
+const MEDIA_BURST_BYTES = 16 * 1024 * 1024;
+const MEDIA_QUEUE_OBSERVATION_MS = 200;
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const { publicKey: googlePublicKey, privateKey: googlePrivateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const googleTestJwk = googlePublicKey.export({ format: "jwk" });
@@ -322,6 +327,92 @@ test("media is signature-validated, stored separately, and supports byte ranges"
   assert.match((await videoContent.json()).error, /image/i);
 });
 
+test("concurrent participant media downloads wait for capacity instead of being rejected", async () => {
+  const login = await loginPresenter();
+  const pngBytes = Buffer.alloc(MEDIA_BURST_BYTES);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(pngBytes);
+  const upload = await fetch(`${baseUrl}/api/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "image/png",
+      "X-File-Name": encodeURIComponent("burst.png"),
+      Cookie: login.cookie,
+      "X-CSRF-Token": login.csrfToken,
+      Origin: baseUrl
+    },
+    body: pngBytes
+  });
+  assert.equal(upload.status, 201);
+  const uploaded = await upload.json();
+  const firstOptionId = randomUUID();
+  const createResponse = await postJson(
+    "/api/sessions",
+    {
+      title: "Media burst integration",
+      questions: [{
+        id: randomUUID(),
+        kind: "quiz",
+        text: "Can every participant load this image?",
+        points: 1_000,
+        timerSeconds: 60,
+        options: [
+          { id: firstOptionId, text: "Yes" },
+          { id: randomUUID(), text: "No" }
+        ],
+        correctOptionId: firstOptionId,
+        media: uploaded.media
+      }]
+    },
+    {
+      Cookie: login.cookie,
+      "X-CSRF-Token": login.csrfToken,
+      Origin: baseUrl
+    }
+  );
+  assert.equal(createResponse.status, 201);
+  const { pin } = await createResponse.json();
+
+  const playerCookies = [];
+  for (let index = 0; index < MEDIA_BURST_REQUEST_COUNT; index += 1) {
+    const joinResponse = await postJson(`/api/sessions/${pin}/join`, { nickname: `Burst Player ${index + 1}` }, {
+      Origin: baseUrl
+    });
+    assert.equal(joinResponse.status, 201);
+    playerCookies.push((joinResponse.headers.get("set-cookie") ?? "").split(";")[0]);
+  }
+
+  const mediaUrl = `${baseUrl}${uploaded.media.url}?pin=${pin}`;
+  const heldResponses = [];
+  const queuedController = new AbortController();
+  try {
+    for (let index = 0; index < MEDIA_BURST_HELD_REQUEST_COUNT; index += 1) {
+      const held = await openPausedMedia(mediaUrl, playerCookies[index]);
+      assert.equal(held.response.statusCode, 200);
+      heldResponses.push(held.response);
+    }
+
+    const queuedResponsePromise = fetch(mediaUrl, {
+      headers: { Cookie: playerCookies[MEDIA_BURST_HELD_REQUEST_COUNT] },
+      signal: queuedController.signal
+    });
+    const earlyResult = await Promise.race([
+      queuedResponsePromise.then((response) => ({ kind: "response", response })),
+      delay(MEDIA_QUEUE_OBSERVATION_MS).then(() => ({ kind: "pending" }))
+    ]);
+    assert.equal(earlyResult.kind, "pending");
+
+    heldResponses[0].resume();
+    const queuedResponse = await queuedResponsePromise;
+    assert.equal(queuedResponse.status, 200);
+    assert.equal((await queuedResponse.arrayBuffer()).byteLength, MEDIA_BURST_BYTES);
+  } finally {
+    queuedController.abort();
+    for (const response of heldResponses) {
+      response.destroy();
+    }
+  }
+});
+
 test("trusted real-IP headers rate-limit distinct originating clients independently", async () => {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const response = await fetch(`${baseUrl}/auth/google`, {
@@ -435,4 +526,14 @@ function getAvailablePort() {
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function openPausedMedia(url, cookie) {
+  return new Promise((resolve, reject) => {
+    const request = httpGet(url, { headers: { Cookie: cookie } }, (response) => {
+      response.pause();
+      resolve({ request, response });
+    });
+    request.once("error", reject);
+  });
 }

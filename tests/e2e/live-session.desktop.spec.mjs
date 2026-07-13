@@ -1,16 +1,68 @@
 import { expect, test } from "@playwright/test";
 import {
-  BASE_URL,
   captureRuntimeErrors,
   expectNoRuntimeErrors,
   joinAsPlayer,
-  loginPresenter
+  loginPresenter,
+  PRESENTER_EMAIL,
+  PRESENTER_PASSWORD
 } from "./support.mjs";
 
+const ANSWER_LOCKED_MESSAGE = "Your answer is locked in.";
+const ANSWER_SUBMITTED_LABEL = "Answer submitted";
+const GOOGLE_CLIENT_ID_FOR_FAILURE_TEST = "e2e-google-script-failure.apps.googleusercontent.com";
 const GOOGLE_BUTTON_HEIGHT = 48;
+const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const GOOGLE_ICON_SIZE = 18;
+const HTTP_OK = 200;
+const JSON_CONTENT_TYPE = "application/json";
+const LEGACY_ANSWER_ACKNOWLEDGEMENT = "Lightning fast";
 const VISUALLY_HIDDEN_SIZE = 1;
 const QUESTION_IMAGE = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+
+async function expectSubmittedAcknowledgement(page, expectedText = null) {
+  const submittedStage = page.locator(".player-submitted-stage");
+  const acknowledgement = submittedStage.getByRole("heading");
+
+  await expect(submittedStage.getByText(ANSWER_SUBMITTED_LABEL, { exact: true })).toBeVisible();
+  await expect(acknowledgement).toBeVisible();
+  await expect(acknowledgement).not.toHaveText(LEGACY_ANSWER_ACKNOWLEDGEMENT);
+  await expect(submittedStage.getByText(ANSWER_LOCKED_MESSAGE, { exact: true })).toBeVisible();
+
+  const text = (await acknowledgement.textContent())?.trim() ?? "";
+  expect(text).not.toBe("");
+  if (expectedText !== null) {
+    await expect(acknowledgement).toHaveText(expectedText);
+  }
+  return text;
+}
+
+async function endActivePresenterSession(page, baseURL) {
+  const meResponse = await page.request.get("/api/me");
+  if (!meResponse.ok()) {
+    return;
+  }
+  const me = await meResponse.json();
+  if (!me.presenter || typeof me.csrfToken !== "string" || !me.csrfToken) {
+    return;
+  }
+  const activeResponse = await page.request.get("/api/sessions/active");
+  if (!activeResponse.ok()) {
+    return;
+  }
+  const active = await activeResponse.json();
+  if (typeof active.pin !== "string" || !active.pin) {
+    return;
+  }
+  const endResponse = await page.request.post(`/api/sessions/${active.pin}/end`, {
+    headers: {
+      Origin: new URL(baseURL).origin,
+      "X-CSRF-Token": me.csrfToken
+    },
+    data: { discardActiveRound: true }
+  });
+  expect(endResponse.ok()).toBe(true);
+}
 
 test("Google presenter button stays compact when provider inline styles are unavailable", async ({ page }) => {
   await page.goto("/presentation/login");
@@ -56,6 +108,40 @@ test("Google presenter button stays compact when provider inline styles are unav
   expect(metrics.iconHeight).toBe(GOOGLE_ICON_SIZE);
   expect(metrics.assistiveLabelWidth).toBe(VISUALLY_HIDDEN_SIZE);
   expect(metrics.assistiveLabelHeight).toBe(VISUALLY_HIDDEN_SIZE);
+});
+
+test.describe("Google sign-in failure", () => {
+  test.use({ bypassCSP: true });
+
+  test("email and password fallback remains usable when the Google script cannot load", async ({ page }) => {
+    let googleScriptRequested = false;
+
+    await page.route("**/api/config", async (route) => {
+      const response = await route.fetch();
+      const config = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...config,
+          googleClientId: GOOGLE_CLIENT_ID_FOR_FAILURE_TEST,
+          localAuthEnabled: true
+        }
+      });
+    });
+    await page.route(GOOGLE_IDENTITY_SCRIPT_URL, async (route) => {
+      googleScriptRequested = true;
+      await route.abort("failed");
+    });
+
+    await page.goto("/presentation/login");
+    await expect.poll(() => googleScriptRequested).toBe(true);
+    await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
+    await page.getByLabel("Email", { exact: true }).fill(PRESENTER_EMAIL);
+    await page.getByLabel("Password", { exact: true }).fill(PRESENTER_PASSWORD);
+    await page.getByRole("button", { name: /^Sign in(?: with email)?$/i }).click();
+    await expect(page.getByRole("heading", { name: /Welcome back/i })).toBeVisible();
+  });
 });
 
 test("minor interface chrome stays clear, contextual, and keyboard visible", async ({ page }) => {
@@ -159,9 +245,13 @@ test("quiz editor supports two to six answers, multiple correct toggles, and one
   await expect(page.getByLabel("Question image", { exact: true })).toBeAttached();
 });
 
-test("presenter creates a quiz and completes a resumable two-context live session", async ({ browser, page }) => {
+test("@live presenter creates a quiz and completes a resumable two-context live session", async ({ baseURL, browser, page }) => {
+  if (!baseURL) {
+    throw new Error("The desktop live-flow test requires Playwright to provide a baseURL.");
+  }
+
   let presenterErrors;
-  const playerContext = await browser.newContext({ baseURL: BASE_URL });
+  const playerContext = await browser.newContext({ baseURL });
   const playerPage = await playerContext.newPage();
   const playerErrors = captureRuntimeErrors(playerPage);
 
@@ -226,17 +316,39 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     });
     expect(imageOffset).toBeLessThanOrEqual(1);
 
+    let presentationListFailureInjected = false;
+    const failPresentationList = async (route) => {
+      const requestUrl = new URL(route.request().url());
+      if (!presentationListFailureInjected
+        && route.request().method() === "GET"
+        && requestUrl.pathname === "/api/presentations") {
+        presentationListFailureInjected = true;
+        await route.fulfill({
+          status: HTTP_OK,
+          contentType: JSON_CONTENT_TYPE,
+          body: "{"
+        });
+        return;
+      }
+      await route.continue();
+    };
+    await page.route("**/*", failPresentationList);
+    await page.reload();
+    await expect.poll(() => presentationListFailureInjected).toBe(true);
+    await page.unroute("**/*", failPresentationList);
+    await expect(page.getByRole("button", { name: /^(?:Skip timer|Reveal)$/ })).toBeVisible();
+    await expect(page.locator(".answer-progress").first()).toHaveAttribute("aria-label", "0 of 0 answers");
+
     const firstAnswer = playerPage.getByRole("button", {
       name: "Option 1, red triangle: First choice",
       exact: true
     });
     await expect(firstAnswer).toBeEnabled();
     await firstAnswer.click();
-    await expect(playerPage.getByRole("heading", { name: "Lightning fast", exact: true })).toBeVisible();
+    const acknowledgement = await expectSubmittedAcknowledgement(playerPage);
 
     await playerPage.reload();
-    await expect(playerPage.getByRole("heading", { name: "Lightning fast", exact: true })).toBeVisible();
-    await expect(playerPage.getByText("But did you get it right?", { exact: true })).toBeVisible();
+    await expectSubmittedAcknowledgement(playerPage, acknowledgement);
 
     await page.getByRole("button", { name: /^(?:Skip timer|Reveal)$/ }).click();
     await expect(page.locator(".answer-distribution-chart")).toBeVisible();
@@ -316,11 +428,20 @@ test("presenter creates a quiz and completes a resumable two-context live sessio
     expectNoRuntimeErrors(presenterErrors);
     expectNoRuntimeErrors(playerErrors);
   } finally {
-    await playerContext.close();
+    try {
+      await endActivePresenterSession(page, baseURL);
+    } finally {
+      await playerContext.close();
+    }
   }
 });
 
-test("presenter can explicitly resolve a stale editor save", async ({ page }) => {
+test("presenter can explicitly resolve a stale editor save", async ({ baseURL, page }) => {
+  if (!baseURL) {
+    throw new Error("The stale-save test requires Playwright to provide a baseURL.");
+  }
+
+  const origin = new URL(baseURL).origin;
   await loginPresenter(page);
   await page.getByRole("button", { name: /new presentation/i }).click();
   await page.getByLabel("Deck title", { exact: true }).fill("Initial local draft");
@@ -334,7 +455,7 @@ test("presenter can explicitly resolve a stale editor save", async ({ page }) =>
   const current = (await currentResponse.json()).presentation;
   const externalSave = await page.request.put(`/api/presentations/${presentationId}`, {
     headers: {
-      Origin: BASE_URL,
+      Origin: origin,
       "X-CSRF-Token": me.csrfToken
     },
     data: {

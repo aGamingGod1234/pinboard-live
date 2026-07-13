@@ -42,6 +42,9 @@ const MAX_TIMER_SECONDS = 300;
 const GAME_AUDIO_MANIFEST_PATH = "/audio/game-audio.json";
 const GAME_AUDIO_DEFAULT_VOLUME = 0.85;
 const GAME_AUDIO_PODIUM_CONFETTI_DELAY_MS = 1_100;
+const PODIUM_REVEAL_STEP_COUNT = 3;
+const PODIUM_CONFETTI_PIECE_COUNT = 18;
+const LIVE_SESSION_DASHBOARD_UNAVAILABLE_NOTICE = "Live session restored. The presentation list is temporarily unavailable.";
 const PRESENTATION_PATH_PREFIX = "/presentation";
 const PRESENTATION_LOGIN_PATH = `${PRESENTATION_PATH_PREFIX}/login`;
 const PRESENTATION_HOME_PATH = `${PRESENTATION_PATH_PREFIX}/homepage`;
@@ -1125,18 +1128,17 @@ function renderPodium(players, pin = "podium") {
   const second = top[1];
   const third = top[2];
   const revealOrder = getPodiumRevealOrder(reducedMotionQuery.matches);
-  const revealDelays = new Map(revealOrder.map((place, index) => [place, index * 380]));
-  const confettiDelay = (revealDelays.get(1) ?? 0) + GAME_AUDIO_PODIUM_CONFETTI_DELAY_MS;
+  const revealSteps = new Map(revealOrder.map((place, index) => [place, index]));
 
   return `
     <section class="podium-screen">
-      ${renderPodiumConfetti(confettiDelay)}
+      ${renderPodiumConfetti(revealSteps.get(1) ?? 0)}
       <div class="play-wordmark play-wordmark-small">Pinboard<span>!</span></div>
       <h1>Final podium</h1>
       <div class="podium-steps">
-        ${renderPodiumPlace(third, 3, pin, revealDelays.get(3) ?? 0)}
-        ${renderPodiumPlace(second, 2, pin, revealDelays.get(2) ?? 0)}
-        ${renderPodiumPlace(first, 1, pin, revealDelays.get(1) ?? 0)}
+        ${renderPodiumPlace(third, 3, pin, revealSteps.get(3) ?? 0)}
+        ${renderPodiumPlace(second, 2, pin, revealSteps.get(2) ?? 0)}
+        ${renderPodiumPlace(first, 1, pin, revealSteps.get(1) ?? 0)}
       </div>
       <div class="completion-actions">
         <button type="button" data-action="play-again">Play again</button>
@@ -1146,10 +1148,11 @@ function renderPodium(players, pin = "podium") {
   `;
 }
 
-function renderPodiumPlace(player, place, pin, revealDelayMs = 0) {
+function renderPodiumPlace(player, place, pin, revealStep = 0) {
   const playerKey = player?.id ?? player?.nickname ?? `empty-${place}`;
+  const safeRevealStep = Math.max(0, Math.min(PODIUM_REVEAL_STEP_COUNT - 1, Number(revealStep) || 0));
   return `
-    <div class="podium-place podium-place-${place}" style="--podium-reveal-delay:${revealDelayMs}ms;">
+    <div class="podium-place podium-place-${place} podium-reveal-step-${safeRevealStep}">
       <strong>${place}</strong>
       <span>${escapeHtml(formatLeaderboardName(player, "Empty"))}</span>
       ${renderCount(player?.score ?? 0, `podium:${pin}:${place}:${playerKey}`, "", "em")}
@@ -1157,19 +1160,11 @@ function renderPodiumPlace(player, place, pin, revealDelayMs = 0) {
   `;
 }
 
-function renderPodiumConfetti(delayMs) {
-  const pieces = Array.from({ length: 18 }, (_, index) => {
-    const x = (index * 11) % 100;
-    const hue = [12, 38, 54, 118, 184, 254][index % 6];
-    const width = 6 + (index % 3) * 2;
-    const height = 10 + (index % 4) * 2;
-    const tilt = -28 + (index % 7) * 9;
-    const drift = 34 + (index % 5) * 9;
-    const pieceDelay = delayMs + (index % 6) * 42;
-    return `<span style="--confetti-x:${x}%;--confetti-hue:${hue};--confetti-width:${width}px;--confetti-height:${height}px;--confetti-tilt:${tilt}deg;--confetti-drift:${drift}px;--confetti-delay:${pieceDelay}ms"></span>`;
-  }).join("");
+function renderPodiumConfetti(revealStep = 0) {
+  const safeRevealStep = Math.max(0, Math.min(PODIUM_REVEAL_STEP_COUNT - 1, Number(revealStep) || 0));
+  const pieces = Array.from({ length: PODIUM_CONFETTI_PIECE_COUNT }, () => "<span></span>").join("");
 
-  return `<div class="podium-confetti" aria-hidden="true">${pieces}</div>`;
+  return `<div class="podium-confetti podium-confetti-step-${safeRevealStep}" aria-hidden="true">${pieces}</div>`;
 }
 
 function renderPlayerWaiting(remote) {
@@ -1435,7 +1430,7 @@ async function authenticatePresenter() {
   });
   acceptPresenterSession(response.presenter, response.csrfToken);
   await loadPresenterHome();
-  if (!(await openPendingPresentationIfNeeded())) {
+  if (!state.session && !(await openPendingPresentationIfNeeded())) {
     updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
   }
   state.presenterPassword = "";
@@ -1479,7 +1474,16 @@ async function syncGoogleSignInButton() {
     return;
   }
 
-  await loadGoogleIdentityScript();
+  try {
+    await loadGoogleIdentityScript();
+  } catch {
+    if (document.body.contains(slot)) {
+      slot.textContent = "Google sign-in is unavailable. Use email and password below.";
+      slot.setAttribute("role", "status");
+      slot.dataset.ready = "error";
+    }
+    return;
+  }
   if (!window.google?.accounts?.id || !document.body.contains(slot)) {
     return;
   }
@@ -1535,7 +1539,7 @@ async function handleGoogleCredential(result) {
     });
     acceptPresenterSession(response.presenter, response.csrfToken);
     await loadPresenterHome();
-    if (!(await openPendingPresentationIfNeeded())) {
+    if (!state.session && !(await openPendingPresentationIfNeeded())) {
       updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
     }
     showNotice(`Welcome back, ${state.presenter?.name || "Presenter"}.`);
@@ -1566,7 +1570,7 @@ async function restorePresenterIfPossible() {
     if (!restored) {
       return;
     }
-    if (!(await openPendingPresentationIfNeeded()) && isPresentationLoginPath()) {
+    if (!state.session && !(await openPendingPresentationIfNeeded()) && isPresentationLoginPath()) {
       updateBrowserUrl(PRESENTATION_HOME_PATH, { replace: true });
     }
   } catch (error) {
@@ -1592,7 +1596,26 @@ async function loadPresenterHome() {
     return false;
   }
   acceptPresenterSession(me.presenter, me.csrfToken);
-  await loadPresentations();
+  const activeSessionRestored = await restoreActiveHostSession();
+  try {
+    await loadPresentations();
+  } catch (error) {
+    if (!activeSessionRestored) {
+      throw error;
+    }
+    state.notice = LIVE_SESSION_DASHBOARD_UNAVAILABLE_NOTICE;
+  }
+  return true;
+}
+
+async function restoreActiveHostSession() {
+  const active = await getJson("/api/sessions/active", true);
+  if (!active.session || typeof active.pin !== "string" || !active.pin) {
+    return false;
+  }
+  state.session = active.session;
+  applyRemoteState(active.session);
+  connectEvents(active.pin, "host");
   return true;
 }
 
