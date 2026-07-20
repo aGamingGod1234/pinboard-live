@@ -7,6 +7,7 @@ import {
   createSseParser,
   endSessionForCleanup,
   evaluateReadiness,
+  main,
   parseConfig,
   requiredReconnectCount,
   settleConcurrentWithCleanup,
@@ -78,6 +79,33 @@ test("parseConfig refuses credential CLI flags and never echoes the environment 
       return true;
     }
   );
+});
+
+test("main redacts readiness credentials from configuration errors", async () => {
+  const messages = [];
+  const env = {
+    ...BASE_ENV,
+    get LIVE_READINESS_BASE_URL() {
+      throw new Error(`configuration failed near ${BASE_ENV.LIVE_READINESS_PRESENTER_PASSWORD}`);
+    }
+  };
+
+  const previousExitCode = process.exitCode;
+  try {
+    await main({
+      argv: [],
+      env,
+      output: {
+        log: (message) => messages.push(String(message)),
+        error: (message) => messages.push(String(message))
+      }
+    });
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+
+  assert.equal(messages.some((message) => message.includes(BASE_ENV.LIVE_READINESS_PRESENTER_PASSWORD)), false);
+  assert.equal(messages.some((message) => message.includes("[redacted]")), true);
 });
 
 test("splitSetCookieHeader preserves commas inside Expires attributes", () => {

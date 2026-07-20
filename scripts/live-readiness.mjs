@@ -626,6 +626,17 @@ function redactSecrets(message, secrets) {
   return redacted;
 }
 
+function createRedactingOutput(output, secrets) {
+  return {
+    log(message) {
+      output.log(redactSecrets(message, secrets));
+    },
+    error(message) {
+      output.error(redactSecrets(message, secrets));
+    }
+  };
+}
+
 async function jsonRequest(runtime, descriptor) {
   const hasBody = descriptor.body !== undefined;
   const headers = {
@@ -1289,24 +1300,26 @@ function printReport(report, output = console) {
 }
 
 export async function main({ argv = process.argv.slice(2), env = process.env, fetchImpl = globalThis.fetch, output = console } = {}) {
+  const secrets = [env.LIVE_READINESS_PRESENTER_EMAIL, env.LIVE_READINESS_PRESENTER_PASSWORD];
+  const safeOutput = createRedactingOutput(output, secrets);
   let config;
   try {
     config = parseConfig({ argv, env });
   } catch (error) {
-    output.error(`[readiness] configuration error: ${safeErrorMessage(error)}`);
+    safeOutput.error(`[readiness] configuration error: ${safeErrorMessage(error)}`);
     process.exitCode = 1;
     return null;
   }
   if (config.help) {
-    output.log(HELP_TEXT);
+    safeOutput.log(HELP_TEXT);
     return null;
   }
   const report = await runReadiness(config, {
     fetchImpl,
-    log: (message) => output.log(message),
-    errorLog: (message) => output.error(message)
+    log: (message) => safeOutput.log(message),
+    errorLog: (message) => safeOutput.error(message)
   });
-  printReport(report, output);
+  printReport(report, safeOutput);
   process.exitCode = report.passed ? 0 : 1;
   return report;
 }
@@ -1324,7 +1337,8 @@ export function isDirectExecution(metaUrl = import.meta.url, scriptPath = proces
 
 if (isDirectExecution()) {
   void main().catch((error) => {
-    console.error(`[readiness] fatal: ${safeErrorMessage(error)}`);
+    const secrets = [process.env.LIVE_READINESS_PRESENTER_EMAIL, process.env.LIVE_READINESS_PRESENTER_PASSWORD];
+    console.error(redactSecrets(`[readiness] fatal: ${safeErrorMessage(error)}`, secrets));
     process.exitCode = 1;
   });
 }

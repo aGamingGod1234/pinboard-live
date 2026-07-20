@@ -180,15 +180,18 @@ test("Google OAuth callback honors the requested cookie persistence", async () =
   });
   assert.equal(start.status, 302);
   const startCookies = start.headers.get("set-cookie") ?? "";
-  const state = extractCookieValue(startCookies, "pinboard_oauth_state");
+  const stateDigest = extractCookieValue(startCookies, "pinboard_oauth_state");
+  const callbackState = new URL(start.headers.get("location") ?? "", baseUrl).searchParams.get("state");
   const keepSignedIn = extractCookieValue(startCookies, "pinboard_oauth_keep_signed_in");
-  assert.ok(state);
+  assert.ok(stateDigest);
+  assert.ok(callbackState);
+  assert.notEqual(stateDigest, callbackState);
   assert.equal(keepSignedIn, "1");
 
-  const callback = await fetch(`${baseUrl}/auth/google/callback?state=${encodeURIComponent(state)}&code=mock-code`, {
+  const callback = await fetch(`${baseUrl}/auth/google/callback?state=${encodeURIComponent(callbackState)}&code=mock-code`, {
     headers: {
       Cookie: [
-        `pinboard_oauth_state=${encodeURIComponent(state)}`,
+        `pinboard_oauth_state=${encodeURIComponent(stateDigest)}`,
         `pinboard_oauth_keep_signed_in=1`
       ].join("; ")
     },

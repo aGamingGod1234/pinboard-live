@@ -588,7 +588,7 @@ async function handleGoogleAuthStart(request, response, url) {
   } else {
     clearCookie(response, GOOGLE_OAUTH_KEEP_SIGNED_IN_COOKIE);
   }
-  setCookie(response, GOOGLE_OAUTH_STATE_COOKIE, state, { maxAge: 600 });
+  setCookie(response, GOOGLE_OAUTH_STATE_COOKIE, hashSecret(state), { maxAge: 600 });
   response.writeHead(302, { Location: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` });
   response.end();
 }
@@ -596,7 +596,7 @@ async function handleGoogleAuthStart(request, response, url) {
 async function handleGoogleAuthCallback(request, response, url) {
   assertGoogleOAuthConfigured();
   const cookies = readCookies(request);
-  const expectedState = cookies[GOOGLE_OAUTH_STATE_COOKIE];
+  const expectedStateHash = cookies[GOOGLE_OAUTH_STATE_COOKIE];
   const keepSignedIn = parseBooleanLike(cookies[GOOGLE_OAUTH_KEEP_SIGNED_IN_COOKIE]);
   const state = url.searchParams.get("state") ?? "";
   const code = url.searchParams.get("code") ?? "";
@@ -609,7 +609,7 @@ async function handleGoogleAuthCallback(request, response, url) {
     throw new HttpError(400, `Google sign-in failed: ${error}`);
   }
 
-  if (!code || !expectedState || state !== expectedState) {
+  if (!code || !state || !expectedStateHash || !constantTimeStringEquals(hashSecret(state), expectedStateHash)) {
     throw new HttpError(400, "Google sign-in state is not valid.");
   }
 
