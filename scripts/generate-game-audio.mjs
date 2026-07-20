@@ -141,13 +141,8 @@ async function main() {
   const budgetUsd = normalizeBudget(process.env.MUSICGPT_BUDGET_USD, DEFAULT_BUDGET_USD);
   const manifest = {
     version: 1,
-    generatedAt: new Date().toISOString(),
-    budgetUsd,
-    estimatedSpendUsd: 0,
-    actualSpendUsd: 0,
     loops: {},
-    effects: {},
-    sources: []
+    effects: {}
   };
 
   let estimatedSpendUsd = 0;
@@ -177,25 +172,15 @@ async function main() {
     const actualCost = toFiniteNumber(conversion.conversion_cost ?? conversion.cost ?? 0);
     actualSpendUsd += actualCost;
 
-    addManifestEntry(manifest, request, {
-      taskId: conversion.task_id ?? queue.task_id ?? "",
-      conversionId,
-      audioUrl,
-      estimatedCost,
-      actualCost,
-      title: conversion.title ?? request.title,
-      status: conversion.status ?? "COMPLETED"
-    });
+    addManifestEntry(manifest, request);
 
     console.log(`${request.key}: saved ${request.fileName} (${formatCurrency(estimatedCost)} estimated, ${formatCurrency(actualCost)} actual)`);
   }
 
-  manifest.estimatedSpendUsd = roundCurrency(estimatedSpendUsd);
-  manifest.actualSpendUsd = roundCurrency(actualSpendUsd);
   await writeFile(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   console.log(`manifest: ${path.relative(process.cwd(), MANIFEST_PATH)}`);
-  console.log(`estimated spend: ${formatCurrency(manifest.estimatedSpendUsd)}`);
-  console.log(`actual spend: ${formatCurrency(manifest.actualSpendUsd)}`);
+  console.log(`estimated spend: ${formatCurrency(estimatedSpendUsd)}`);
+  console.log(`actual spend: ${formatCurrency(actualSpendUsd)}`);
 }
 
 async function queueMusicRequest(request) {
@@ -399,30 +384,18 @@ async function moveFile(source, destination) {
   await rename(source, destination);
 }
 
-function addManifestEntry(manifest, request, metadata) {
+function addManifestEntry(manifest, request) {
   const entry = {
     src: request.src,
-    title: request.title,
-    prompt: request.prompt,
-    volume: request.volume,
-    fileName: request.fileName,
-    taskId: metadata.taskId,
-    conversionId: metadata.conversionId,
-    audioUrl: metadata.audioUrl,
-    estimatedCost: roundCurrency(metadata.estimatedCost),
-    actualCost: roundCurrency(metadata.actualCost),
-    status: metadata.status
+    volume: request.volume
   };
 
   if (request.collection === "loops") {
-    entry.musicStyle = request.musicStyle;
     manifest.loops[request.key] = entry;
   } else {
     entry.cooldownMs = request.cooldownMs;
     manifest.effects[request.key] = entry;
   }
-
-  manifest.sources.push(entry);
 }
 
 async function safeJson(response) {

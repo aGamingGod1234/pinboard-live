@@ -1,6 +1,8 @@
 # Pinboard Live
 
-Pinboard Live is a minimal Kahoot-style quiz app with presenter controls, anonymous player joins, live slides, quizzes, polls, scoring, and reconnect support.
+Pinboard Live is a lightweight live quiz app with presenter controls, anonymous player joins, slides, multi-answer quizzes, scoring, and reconnect support.
+
+**Live app:** [agaminggod.com](https://agaminggod.com)
 
 ## Requirements
 
@@ -77,6 +79,14 @@ npm run check
 `npm test` runs unit and integration tests. `npm run check` runs the full test suite plus JavaScript syntax checks. CI also runs a production-dependency audit at the `high` severity threshold.
 
 CI provisions a disposable PostgreSQL 16 service and runs the two-replica concurrency suite, including stale presentation writes, a slow-body lock probe, duplicate and 20-player answer bursts, scoring/restart persistence, and cross-replica logout revocation. Local runs skip that single test unless `TEST_DATABASE_URL` points to a local database whose name contains `test`.
+
+## Responsible disclosure
+
+Please do not open public issues for security vulnerabilities. Use GitHub's private **Report a vulnerability** form for this repository. See [SECURITY.md](SECURITY.md) for scope and reporting guidance.
+
+## License
+
+This repository is source-visible but is not currently released under an open-source license. See [LICENSE](LICENSE). Generated audio assets remain subject to the applicable provider terms and are not offered under a separate open-source grant.
 
 ## Database migration and rollback
 
