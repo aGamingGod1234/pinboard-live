@@ -6,6 +6,7 @@ import {
   getPodiumRevealOrder,
   isValidLiveTimer,
   removeQuizOption,
+  reorderItemsById,
   selectAnswerAcknowledgement,
   shouldPlayGameSound,
   shouldAcceptLiveState,
@@ -36,6 +37,8 @@ const LIVE_TIMER_URGENCY_THRESHOLD_MS = 5 * 1000;
 const MAX_TITLE_LENGTH = 120;
 const MAX_QUESTION_TEXT_LENGTH = 120;
 const MAX_OPTION_TEXT_LENGTH = 64;
+const QUESTION_DRAG_SCROLL_EDGE_PX = 48;
+const QUESTION_DRAG_SCROLL_STEP_PX = 24;
 const DEFAULT_TIMER_SECONDS = 30;
 const MIN_TIMER_SECONDS = 5;
 const MAX_TIMER_SECONDS = 300;
@@ -110,6 +113,7 @@ const state = {
   draft: createDraft(),
   pendingSelections: new Map(),
   activeQuestionId: "",
+  reorderAnnouncement: "",
   eventSource: null,
   error: "",
   notice: "",
@@ -128,6 +132,7 @@ const state = {
 };
 
 let draftSaveCoordinator = createPresentationSaveCoordinator();
+let draggedQuestionId = "";
 
 if (state.pendingPresentationId) {
   sessionStorage.setItem(STORAGE_KEYS.pendingPresentationId, state.pendingPresentationId);
@@ -298,6 +303,11 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  const questionMini = event.target instanceof Element ? event.target.closest(".question-mini") : null;
+  if (questionMini && handleQuestionReorderShortcut(event, questionMini)) {
+    return;
+  }
+
   const menu = event.target instanceof Element ? event.target.closest('[role="menu"]') : null;
   if (!menu) {
     return;
@@ -341,6 +351,11 @@ document.addEventListener("change", async (event) => {
     showError(error);
   }
 });
+
+document.addEventListener("dragstart", handleQuestionDragStart);
+document.addEventListener("dragover", handleQuestionDragOver);
+document.addEventListener("drop", handleQuestionDrop);
+document.addEventListener("dragend", resetQuestionDragState);
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
@@ -898,9 +913,11 @@ function renderCreator() {
             <h1 class="panel-title">Create</h1>
             <button type="button" class="secondary" data-action="add-question">Add item</button>
           </div>
+          <p id="question-reorder-instructions" class="question-reorder-assistive">Drag an item to reorder it. Keyboard users can press Alt plus the up or down arrow.</p>
+          <p class="question-reorder-assistive" data-reorder-status role="status" aria-live="polite">${escapeHtml(state.reorderAnnouncement)}</p>
           <div class="question-strip">
             ${state.draft.questions.map((question, index) => `
-              <button class="question-mini ${question.id === state.activeQuestionId ? "is-active" : ""}" type="button" data-action="select-question" data-question-id="${question.id}" data-question-mini="${question.id}" aria-current="${question.id === state.activeQuestionId ? "true" : "false"}">
+              <button class="question-mini ${question.id === state.activeQuestionId ? "is-active" : ""}" type="button" draggable="true" data-action="select-question" data-question-id="${question.id}" data-question-mini="${question.id}" aria-current="${question.id === state.activeQuestionId ? "true" : "false"}" aria-describedby="question-reorder-instructions" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="Drag to reorder">
                 <span class="question-mini-icon">${index + 1}</span>
                 <strong>${escapeHtml(question.text || "Untitled item")}</strong>
                 <small>${escapeHtml(getQuestionTypeLabel(question.kind))}</small>
@@ -2472,6 +2489,147 @@ async function uploadMedia(file) {
     state.csrfToken = body.csrfToken;
   }
   return body;
+}
+
+function handleQuestionDragStart(event) {
+  const questionMini = event.target instanceof Element ? event.target.closest(".question-mini") : null;
+  const questionId = questionMini?.dataset.questionId ?? "";
+  if (!questionId || !event.dataTransfer) {
+    event.preventDefault();
+    return;
+  }
+
+  draggedQuestionId = questionId;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", questionId);
+  questionMini.classList.add("is-dragging");
+}
+
+function handleQuestionDragOver(event) {
+  if (!draggedQuestionId || !(event.target instanceof Element)) {
+    return;
+  }
+
+  const questionStrip = event.target.closest(".question-strip");
+  if (!questionStrip) {
+    return;
+  }
+
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+  scrollQuestionStripDuringDrag(questionStrip, event.clientY);
+
+  const questionMini = event.target.closest(".question-mini");
+  const targetQuestionId = questionMini?.dataset.questionId ?? "";
+  clearQuestionDropIndicators();
+  if (!questionMini || !targetQuestionId || targetQuestionId === draggedQuestionId) {
+    return;
+  }
+
+  questionMini.classList.add(getQuestionDropPlacement(questionMini, event.clientY) === "before"
+    ? "is-drop-before"
+    : "is-drop-after");
+}
+
+function handleQuestionDrop(event) {
+  if (!draggedQuestionId || !(event.target instanceof Element)) {
+    resetQuestionDragState();
+    return;
+  }
+
+  const questionMini = event.target.closest(".question-mini");
+  const targetQuestionId = questionMini?.dataset.questionId ?? "";
+  if (!questionMini || !targetQuestionId || targetQuestionId === draggedQuestionId) {
+    resetQuestionDragState();
+    return;
+  }
+
+  event.preventDefault();
+  const movedQuestionId = draggedQuestionId;
+  const placement = questionMini.classList.contains("is-drop-before")
+    ? "before"
+    : questionMini.classList.contains("is-drop-after")
+      ? "after"
+      : getQuestionDropPlacement(questionMini, event.clientY);
+  const reorderedQuestions = reorderItemsById(
+    state.draft.questions,
+    movedQuestionId,
+    targetQuestionId,
+    placement
+  );
+  resetQuestionDragState();
+  applyQuestionReorder(reorderedQuestions, movedQuestionId);
+}
+
+function handleQuestionReorderShortcut(event, questionMini) {
+  if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) {
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  const questionId = questionMini.dataset.questionId ?? "";
+  const currentIndex = state.draft.questions.findIndex((question) => question.id === questionId);
+  const targetIndex = currentIndex + (event.key === "ArrowUp" ? -1 : 1);
+  const targetQuestion = state.draft.questions[targetIndex];
+  if (currentIndex < 0 || !targetQuestion) {
+    return true;
+  }
+
+  const reorderedQuestions = reorderItemsById(
+    state.draft.questions,
+    questionId,
+    targetQuestion.id,
+    event.key === "ArrowUp" ? "before" : "after"
+  );
+  applyQuestionReorder(reorderedQuestions, questionId);
+  return true;
+}
+
+function applyQuestionReorder(reorderedQuestions, movedQuestionId) {
+  if (reorderedQuestions === state.draft.questions) {
+    return;
+  }
+
+  state.draft.questions = reorderedQuestions;
+  const movedQuestion = findQuestion(movedQuestionId);
+  const movedIndex = state.draft.questions.findIndex((question) => question.id === movedQuestionId);
+  state.reorderAnnouncement = `Moved ${movedQuestion?.text || "item"} to position ${movedIndex + 1} of ${state.draft.questions.length}.`;
+  markPresentationDirty();
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector(`[data-question-mini="${CSS.escape(movedQuestionId)}"]`)?.focus();
+  });
+}
+
+function getQuestionDropPlacement(questionMini, clientY) {
+  const bounds = questionMini.getBoundingClientRect();
+  return clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+}
+
+function scrollQuestionStripDuringDrag(questionStrip, clientY) {
+  const bounds = questionStrip.getBoundingClientRect();
+  if (clientY < bounds.top + QUESTION_DRAG_SCROLL_EDGE_PX) {
+    questionStrip.scrollTop -= QUESTION_DRAG_SCROLL_STEP_PX;
+  } else if (clientY > bounds.bottom - QUESTION_DRAG_SCROLL_EDGE_PX) {
+    questionStrip.scrollTop += QUESTION_DRAG_SCROLL_STEP_PX;
+  }
+}
+
+function clearQuestionDropIndicators() {
+  document.querySelectorAll(".question-mini.is-drop-before, .question-mini.is-drop-after").forEach((questionMini) => {
+    questionMini.classList.remove("is-drop-before", "is-drop-after");
+  });
+}
+
+function resetQuestionDragState() {
+  draggedQuestionId = "";
+  clearQuestionDropIndicators();
+  document.querySelectorAll(".question-mini.is-dragging").forEach((questionMini) => {
+    questionMini.classList.remove("is-dragging");
+  });
 }
 
 function addQuestion() {

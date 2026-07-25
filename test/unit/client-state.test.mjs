@@ -8,6 +8,7 @@ import {
   createDraftSaveCoordinator,
   getPodiumRevealOrder,
   removeQuizOption,
+  reorderItemsById,
   selectAnswerAcknowledgement,
   shouldPlayGameSound,
   shouldAcceptLiveState,
@@ -24,6 +25,20 @@ const quizQuestion = {
   options: ["a", "b", "c", "d", "e", "f"].map((id) => ({ id, text: id.toUpperCase() })),
   correctOptionIds: ["b", "d"]
 };
+
+test("question reordering moves an item before or after the hovered target", () => {
+  const questions = Array.from({ length: 10 }, (_, index) => ({ id: String(index + 1) }));
+
+  assert.deepEqual(
+    reorderItemsById(questions, "10", "1", "before").map(({ id }) => id),
+    ["10", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+  );
+  assert.deepEqual(
+    reorderItemsById(questions, "10", "1", "after").map(({ id }) => id),
+    ["1", "10", "2", "3", "4", "5", "6", "7", "8", "9"]
+  );
+  assert.deepEqual(questions.map(({ id }) => id), ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+});
 
 test("quiz option helpers enforce limits and promote the nearest correct answer", () => {
   const removed = removeQuizOption(quizQuestion, "b");

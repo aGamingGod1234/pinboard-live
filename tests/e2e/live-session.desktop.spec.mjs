@@ -245,6 +245,58 @@ test("quiz editor supports two to six answers, multiple correct toggles, and one
   await expect(page.getByLabel("Question image", { exact: true })).toBeAttached();
 });
 
+test("presentation editor reorders slides with a drag outline and persists the sequence", async ({ page }) => {
+  await loginPresenter(page);
+  await page.getByRole("button", { name: /new presentation/i }).click();
+
+  const addItem = page.getByRole("button", { name: "Add item", exact: true });
+  for (let index = 1; index < 10; index += 1) {
+    await addItem.click();
+  }
+
+  const questionTexts = page.locator('[data-field="questionText"]');
+  await expect(questionTexts).toHaveCount(10);
+  for (let index = 0; index < 10; index += 1) {
+    await questionTexts.nth(index).fill(`Slide ${index + 1}`);
+  }
+
+  const slideItems = page.locator(".question-mini");
+  const getSlideItem = (title) => slideItems.filter({ has: page.getByText(title, { exact: true }) });
+  const draggedSlide = getSlideItem("Slide 10");
+  const firstSlide = getSlideItem("Slide 1");
+  await expect(draggedSlide).toHaveAttribute("draggable", "true");
+  await expect(draggedSlide).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
+
+  const firstBox = await firstSlide.boundingBox();
+  expect(firstBox).not.toBeNull();
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await draggedSlide.dispatchEvent("dragstart", { dataTransfer });
+  await firstSlide.dispatchEvent("dragover", { dataTransfer, clientY: firstBox.y + 4 });
+  await expect(firstSlide).toHaveClass(/is-drop-before/);
+  await firstSlide.dispatchEvent("drop", { dataTransfer, clientY: firstBox.y + 4 });
+
+  await expect(page.locator(".question-mini strong")).toHaveText([
+    "Slide 10", "Slide 1", "Slide 2", "Slide 3", "Slide 4",
+    "Slide 5", "Slide 6", "Slide 7", "Slide 8", "Slide 9"
+  ]);
+  await expect(page.locator("[data-reorder-status]")).toHaveText("Moved Slide 10 to position 1 of 10.");
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText(/^Saved (?!draft$).+/)).toBeVisible();
+  await page.reload();
+  await expect(page.locator(".question-mini strong")).toHaveText([
+    "Slide 10", "Slide 1", "Slide 2", "Slide 3", "Slide 4",
+    "Slide 5", "Slide 6", "Slide 7", "Slide 8", "Slide 9"
+  ]);
+
+  await getSlideItem("Slide 10").focus();
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(page.locator(".question-mini strong")).toHaveText([
+    "Slide 1", "Slide 10", "Slide 2", "Slide 3", "Slide 4",
+    "Slide 5", "Slide 6", "Slide 7", "Slide 8", "Slide 9"
+  ]);
+});
+
 test("@live presenter creates a quiz and completes a resumable two-context live session", async ({ baseURL, browser, page }) => {
   if (!baseURL) {
     throw new Error("The desktop live-flow test requires Playwright to provide a baseURL.");

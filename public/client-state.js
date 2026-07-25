@@ -242,6 +242,35 @@ export function shouldPlayGameSound(lastPlayedAt, now, cooldownMs) {
 
 const QUIZ_OPTION_LABELS = ["Red", "Blue", "Gold", "Green", "Purple", "Teal"];
 
+/**
+ * Move one identified item before or after another without mutating the source array.
+ *
+ * @template {{ id: string }} Item
+ * @param {Item[]} items
+ * @param {string} movedId
+ * @param {string} targetId
+ * @param {"before" | "after"} placement
+ * @returns {Item[]}
+ */
+export function reorderItemsById(items, movedId, targetId, placement) {
+  if (placement !== "before" && placement !== "after") {
+    throw new TypeError("Placement must be before or after.");
+  }
+
+  const movedIndex = items.findIndex(({ id }) => id === movedId);
+  const targetIndex = items.findIndex(({ id }) => id === targetId);
+  if (movedIndex < 0 || targetIndex < 0 || movedIndex === targetIndex) {
+    return items;
+  }
+
+  const reordered = [...items];
+  const [movedItem] = reordered.splice(movedIndex, 1);
+  const adjustedTargetIndex = reordered.findIndex(({ id }) => id === targetId);
+  const insertionIndex = adjustedTargetIndex + (placement === "after" ? 1 : 0);
+  reordered.splice(insertionIndex, 0, movedItem);
+  return reordered;
+}
+
 export function addQuizOption(question, createId) {
   if (question.kind !== "quiz") throw new TypeError("Only regular quiz answers can be added.");
   if (question.options.length >= 6) throw new RangeError("Quiz questions can have at most 6 answers.");

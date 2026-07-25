@@ -1110,7 +1110,19 @@ label {
   gap: 10px;
 }
 
+.question-reorder-assistive {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .question-mini {
+  position: relative;
   display: grid;
   width: 100%;
   grid-template-columns: 50px minmax(0, 1fr);
@@ -1121,8 +1133,44 @@ label {
   background: #f9faf8;
   padding: 10px;
   color: var(--ink);
-  cursor: pointer;
+  cursor: grab;
   text-align: left;
+}
+
+.question-mini:active,
+.question-mini.is-dragging {
+  cursor: grabbing;
+}
+
+.question-mini.is-dragging {
+  opacity: 0.52;
+}
+
+.question-mini.is-drop-before,
+.question-mini.is-drop-after {
+  border-color: #006eff;
+  outline: 2px solid rgba(0, 110, 255, 0.82);
+  outline-offset: 2px;
+}
+
+.question-mini.is-drop-before::before,
+.question-mini.is-drop-after::after {
+  position: absolute;
+  right: 4px;
+  left: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #006eff;
+  content: "";
+  pointer-events: none;
+}
+
+.question-mini.is-drop-before::before {
+  top: -7px;
+}
+
+.question-mini.is-drop-after::after {
+  bottom: -7px;
 }
 
 .question-mini-icon {
