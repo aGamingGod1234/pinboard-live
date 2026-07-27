@@ -1,0 +1,27 @@
+{
+  "receipts": [
+    {
+      "schemaVersion": 1,
+      "runId": "public-1d3eb427-3209-4a41-b166-7d156c5c601e",
+      "startedAt": "2026-07-27T00:00:09.712Z",
+      "finishedAt": "2026-07-27T00:00:09.712Z",
+      "status": "success",
+      "mode": "codex",
+      "threadId": "withheld",
+      "candidatePath": "withheld",
+      "canonicalPath": "withheld",
+      "receiptPath": "withheld",
+      "counts": {
+        "added": 4,
+        "updated": 26,
+        "removed": 0
+      },
+      "validation": {
+        "ok": true,
+        "errors": []
+      },
+      "sourcePolicy": "public-official-or-organizer-only",
+      "error": null
+    }
+  ]
+}

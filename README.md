@@ -4,6 +4,10 @@ Pinboard Live is a lightweight live quiz app with presenter controls, anonymous 
 
 **Live app:** [agaminggod.com](https://agaminggod.com)
 
+**Singapore AI events:** [agaminggod.com/events](https://agaminggod.com/events)
+
+The events route is a sanitized read-only snapshot packaged from the separate `singapore-ai-events-dashboard` repository. Refresh research and canonical data remain local; this app exposes only fixed browser assets plus `/events/api/data`, `/events/api/receipts`, and `/events/api/health`. To package a newly validated local snapshot before a reviewed release, run `npm run sync:events`.
+
 ## Requirements
 
 - Node.js 22 is used in CI; the application supports Node.js 20 or newer.

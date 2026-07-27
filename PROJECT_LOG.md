@@ -1,3 +1,20 @@
+## [2026-07-27] — Read-only Singapore AI events route
+
+### What Was Implemented
+- Added the sanitized AI Events SG dashboard at `/events/` with 30 validated events, namespaced browser assets, and fixed read-only data/receipt/health APIs.
+- Preserved Pinboard's existing `/events?pin=…` SSE route; bare `/events` redirects to the dashboard only when no PIN is supplied.
+- Added a reproducible `npm run sync:events` packager that copies only required compiled modules, precomputes overlaps, switches the UI to public mode, and withholds local Codex thread/filesystem details.
+- Added integration coverage for the redirect, dashboard, data API, and existing SSE behavior.
+
+### Verification
+- AI Events SG: 27/27 tests, lint, strict typecheck, and 30-event build passed.
+- Pinboard: 75/75 unit tests and 19/19 runnable integration tests passed; the PostgreSQL-only test remains correctly skipped without `TEST_DATABASE_URL`.
+- Local public browser QA passed with 30 rows, evidence drawer, no console errors, failed resources, duplicate IDs, horizontal overflow, command control, local path, or thread-ID exposure.
+
+### Deployment Boundary
+- The public route is read-only and cannot execute Codex, PowerShell, registration, purchase, messaging, or refresh actions.
+- Daily local refreshes do not automatically publish; a new production snapshot requires an explicit Pinboard package and release.
+
 ## [2026-07-07] — Presenter auth and adaptive live-stage cleanup
 
 ### What Was Implemented

@@ -165,6 +165,17 @@ const staticRoutes = new Map([
   ["/styles.css", { path: new URL("./public/styles.css", import.meta.url), type: "text/css; charset=utf-8" }],
   ["/app.js", { path: new URL("./public/app.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
   ["/client-state.js", { path: new URL("./public/client-state.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
+  ["/events/", { path: new URL("./public/events/index.html", import.meta.url), type: "text/html; charset=utf-8" }],
+  ["/events/client/styles.css", { path: new URL("./public/events/client/styles.css", import.meta.url), type: "text/css; charset=utf-8" }],
+  ["/events/client/main.js", { path: new URL("./public/events/client/main.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
+  ["/events/client/icons.js", { path: new URL("./public/events/client/icons.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
+  ["/events/client/state.js", { path: new URL("./public/events/client/state.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
+  ["/events/domain/events.js", { path: new URL("./public/events/domain/events.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
+  ["/events/domain/schema.js", { path: new URL("./public/events/domain/schema.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
+  ["/events/domain/scoring.js", { path: new URL("./public/events/domain/scoring.js", import.meta.url), type: "text/javascript; charset=utf-8" }],
+  ["/events/api/data", { path: new URL("./public/events/api/data.json", import.meta.url), type: "application/json; charset=utf-8" }],
+  ["/events/api/receipts", { path: new URL("./public/events/api/receipts.json", import.meta.url), type: "application/json; charset=utf-8" }],
+  ["/events/api/health", { path: new URL("./public/events/api/health.json", import.meta.url), type: "application/json; charset=utf-8" }],
   [GAME_AUDIO_MANIFEST_ROUTE, { path: new URL("./public/audio/game-audio.json", import.meta.url), type: "application/json; charset=utf-8" }],
   [GAME_AUDIO_LOBBY_LOOP_ROUTE, { path: new URL("./public/audio/lobby-loop.mp3", import.meta.url), type: "audio/mpeg" }],
   [GAME_AUDIO_QUESTION_LOOP_ROUTE, { path: new URL("./public/audio/question-loop.mp3", import.meta.url), type: "audio/mpeg" }],
@@ -430,7 +441,12 @@ async function routeRequest(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/events") {
-    await handleEventStream(request, response, url);
+    if (url.searchParams.has("pin")) {
+      await handleEventStream(request, response, url);
+      return;
+    }
+    response.writeHead(308, { Location: "/events/" });
+    response.end();
     return;
   }
 

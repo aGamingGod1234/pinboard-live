@@ -121,6 +121,24 @@ test("all HTML responses include the security header baseline", async () => {
   assert.match(response.headers.get("permissions-policy") ?? "", /camera=\(\)/);
 });
 
+test("events dashboard is namespaced without replacing the existing SSE route", async () => {
+  const redirectResponse = await fetch(`${baseUrl}/events`, { redirect: "manual" });
+  assert.equal(redirectResponse.status, 308);
+  assert.equal(redirectResponse.headers.get("location"), "/events/");
+
+  const dashboardResponse = await fetch(`${baseUrl}/events/`);
+  assert.equal(dashboardResponse.status, 200);
+  assert.match(await dashboardResponse.text(), /AI Events SG/);
+
+  const dataResponse = await fetch(`${baseUrl}/events/api/data`);
+  assert.equal(dataResponse.status, 200);
+  const data = await dataResponse.json();
+  assert.ok(data.dataset.events.length >= 30);
+
+  const streamResponse = await fetch(`${baseUrl}/events?pin=invalid&role=player`);
+  assert.equal(streamResponse.status, 400);
+});
+
 test("presenter login establishes a revocable HttpOnly cookie without returning a bearer token", async () => {
   const response = await postJson("/api/auth", {
     email: TEST_EMAIL,

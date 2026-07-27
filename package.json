@@ -6,13 +6,14 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
+    "sync:events": "node scripts/sync-events-dashboard.mjs",
     "generate:game-audio": "node scripts/generate-game-audio.mjs",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "node --test test/unit/*.test.mjs",
     "test:integration": "node --test test/integration/*.test.mjs",
     "test:e2e": "playwright test",
     "test:live": "playwright test --grep @live",
-    "check": "npm run test && node --check server.mjs && node --check public/app.js && node --check public/client-state.js"
+    "check": "npm run test && node --check server.mjs && node --check public/app.js && node --check public/client-state.js && node --check scripts/sync-events-dashboard.mjs"
   },
   "engines": {
     "node": ">=20"
