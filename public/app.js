@@ -274,6 +274,7 @@ document.addEventListener("click", async (event) => {
     if (action === "host-reveal") await hostAction("reveal");
     if (action === "host-next") await hostAction("next");
     if (action === "host-end") await hostAction("end");
+    if (action === "kick-player") await hostKick(button.dataset.playerId);
     if (action === "play-again") await playAgain();
     if (action === "leave-player") await leavePlayerSession();
     if (action === "dismiss-message") clearMessages();
@@ -1067,7 +1068,16 @@ function renderPresenterStageBody(remote, question) {
 
   if (remote.phase === "leaderboard") return renderLeaderboardBreak(remote);
 
-  return question ? renderLiveQuestion(remote, true) : renderLobby(remote);
+  const body = question ? renderLiveQuestion(remote, true) : renderLobby(remote);
+  return `
+    <div class="presenter-stage-body">
+      ${body}
+      <div class="presenter-roster" aria-label="Joined players">
+        <div class="presenter-roster-head"><span>Players</span>${renderCount(remote.playerCount, `roster-players:${remote.pin}`, "", "strong")}</div>
+        ${renderParticipantList(remote)}
+      </div>
+    </div>
+  `;
 }
 
 function renderLobby(remote) {
@@ -1427,9 +1437,11 @@ function renderParticipantList(remote) {
   }
 
   return `
-    <div class="participant-list">
+    <div class="participant-list participant-list-kickable" aria-label="Joined players">
       ${remote.recentPlayers.slice(0, 8).map((player) => `
-        <span>${escapeHtml(player.nickname)}</span>
+        <button type="button" class="participant-chip" data-action="kick-player" data-player-id="${escapeHtml(player.id ?? "")}" title="Kick ${escapeHtml(player.nickname)}" aria-label="Kick ${escapeHtml(player.nickname)}">
+          <span>${escapeHtml(player.nickname)}</span>
+        </button>
       `).join("")}
     </div>
   `;
@@ -2105,6 +2117,22 @@ async function hostAction(action) {
   render();
 }
 
+async function hostKick(playerId) {
+  if (!state.remote?.pin || !playerId) {
+    return;
+  }
+
+  if (!window.confirm("Kick this player? They will be returned to the home page and cannot rejoin this game.")) {
+    return;
+  }
+
+  const response = await postJson(`/api/sessions/${state.remote.pin}/kick`, { playerId }, true);
+  if (response.session) {
+    applyRemoteState(response.session);
+  }
+  render();
+}
+
 async function playAgain() {
   if (state.eventSource) {
     state.eventSource.close();
@@ -2288,6 +2316,9 @@ function connectEvents(pin, role) {
     if (role === "player" && nextState.endedReason === "presenter_left") {
       return leavePresentationWithNotice("The presenter has left the presentation.");
     }
+    if (role === "player" && nextState.endedReason === "kicked") {
+      return leavePresentationWithNotice("The presenter removed you from this game.");
+    }
 
     const previousState = state.remote;
     const patchInPlace = shouldPatchLiveState(state.remote, nextState, role);
@@ -2397,6 +2428,9 @@ function applyCompactAnswerState(answer) {
     ...state.remote,
     version: Math.max(Number(state.remote.version) || 0, Number(answer.version) || 0),
     answerCount: Number.isSafeInteger(answer.answerCount) ? answer.answerCount : state.remote.answerCount,
+    answerCounts: answer.answerCounts && typeof answer.answerCounts === "object"
+      ? { ...state.remote.answerCounts, ...answer.answerCounts }
+      : state.remote.answerCounts,
     selectedOptionIds: Array.isArray(answer.selectedOptionIds)
       ? answer.selectedOptionIds
       : state.remote.selectedOptionIds,

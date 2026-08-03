@@ -1,3 +1,30 @@
+## [2026-08-03] — Presenter live fixes, player kick, podium layout, sidebar-safe editor
+
+### What Was Implemented
+- Fixed presenter live answer counts: the compact `answer` SSE event to hosts now carries per-option `answerCounts` (not just the total), and the client merges them so the number next to each option updates as players submit.
+- Added presenter player kick: new authenticated host `kick` action marks the player departed, clears their resume token (cannot rejoin), closes their SSE stream, and broadcasts state. The presenter roster (lobby + live stage) renders names at ~2x size; hovering shows a red chip with strikethrough, and clicking confirms and kicks. Kicked players are returned to the home page with "The presenter removed you from this game."
+- Reworked the final podium: 1st at the top, 2nd bottom-left, 3rd bottom-right (CSS grid areas), with the existing 3 → 2 → 1 reveal order preserved.
+- Fixed the presentation editor clipping when a browser sidebar narrows the window: softened the `question-head` grid minimums, added `min-width: 0` on its children, and added container queries on `.creator-main` so Type/Text/Points/Timer/Remove reflow to the actual editor column width instead of clipping Remove.
+
+### Files Modified
+- `server.mjs` - host answer broadcast with `answerCounts`, `kick` action + `handleKick`, player `id` in `recentPlayers`.
+- `public/app.js` - compact answer state merge, `kick-player` action + `hostKick`, kicked-player redirect, roster rendering, presenter stage roster, podium markup order.
+- `public/styles.css` - podium grid areas (1 top / 2 bottom-left / 3 bottom-right), 2x kickable roster chips with hover strikethrough, `container-type` + container queries for the editor, softer `question-head` columns.
+
+### Verification
+- 75/75 unit tests and 19/19 runnable integration tests pass; syntax checks pass.
+- Live smoke test (local server, in-memory DB) passed: presenter auth, session create, player join, answer accept, reveal; host state includes player ids.
+- Playwright repro at 1136px (sidebar width) confirmed the Remove control was clipped before and fully visible after the editor fix.
+
+### Assumptions Made (flag these for review)
+- Kicked players are treated like departed players (removed from live counts/leaderboard) and cannot rejoin for the rest of the session.
+- The presenter roster shows the 8 most recently joined players, matching the existing `RECENT_PLAYER_LIMIT`-based list.
+- The in-memory local path broadcasts full state events; the compact `answer` event (with counts) is exercised in the PostgreSQL path, which the local smoke test could not cover without a database.
+
+### Known Issues / Deferred
+- The kicked-player redirect relies on the broadcast state event arriving before the stream close; verified in code and unit-tested paths, but a full PostgreSQL-backed end-to-end run is still pending.
+- `outputs/` repro and smoke scripts are local-only (gitignored) and not part of the app.
+
 ## [2026-07-27] — Read-only Singapore AI events route
 
 ### What Was Implemented

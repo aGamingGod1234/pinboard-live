@@ -126,7 +126,7 @@ const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
 const GOOGLE_TOKEN_MAX_LENGTH = 4096;
 const GOOGLE_JWKS_DEFAULT_TTL_MS = 60 * 60 * 1000;
 const GOOGLE_ISSUERS = new Set(["accounts.google.com", "https://accounts.google.com"]);
-const HOST_SESSION_ACTIONS = new Set(["start", "open", "reveal", "next", "end"]);
+const HOST_SESSION_ACTIONS = new Set(["start", "open", "reveal", "next", "end", "kick"]);
 const PLAYER_COOKIE_REQUIRED_ACTIONS = new Set(["answer", "leave"]);
 const SESSION_ACTIONS = new Set(["join", "resume", "answer", "leave", ...HOST_SESSION_ACTIONS]);
 
@@ -974,6 +974,9 @@ async function handleSessionActionLocked({ action, body, pin, playerTokenHash, p
       assertSessionHostPresenter(presenter, session);
       handleEndSession(body, session);
       break;
+    case "kick":
+      assertSessionHostPresenter(presenter, session);
+      return handleKick(body, session);
     default:
       throw new HttpError(404, "Session action was not found.");
   }
@@ -1241,10 +1244,12 @@ function applyCompactAnswerUpdate(event) {
   session.answers.set(event.playerId, { selectedOptionIds: event.selectedOptionIds, answeredAt: event.answeredAt });
   for (const client of [...session.clients.values()]) {
     if (client.role === "host") {
+      const question = getCurrentQuestion(session);
       writeSessionEvent(session, client, `event: answer\ndata: ${JSON.stringify({
           pin: session.pin,
           version: session.version,
-          answerCount: session.answers.size
+          answerCount: session.answers.size,
+          answerCounts: question ? buildAnswerCounts(session, question) : {}
       })}\n\n`, { kind: "answer" });
     } else if (client.playerId === event.playerId) {
       writeSessionEvent(session, client, `event: answer\ndata: ${JSON.stringify({
@@ -1278,6 +1283,33 @@ async function handleLeave(playerTokenHash, session) {
     payload: { left: true },
     includeSession: false,
     clearPlayerCookie: true
+  });
+}
+
+async function handleKick(body, session) {
+  const playerId = readString(body.playerId, "Player");
+  const player = session.players.get(playerId);
+  if (!player || !isActivePlayer(player)) {
+    throw new HttpError(404, "That player is not in this session.", "PLAYER_NOT_FOUND");
+  }
+
+  const leftAt = Date.now();
+  applySessionState(session, setPlayerPresence(session, { playerId: player.id, connected: false, now: leftAt }));
+  const updatedPlayer = session.players.get(player.id);
+  updatedPlayer.resumeTokenHash = "";
+  updatedPlayer.leftAt = leftAt;
+  await persistPlayerPresence(session, updatedPlayer);
+  broadcastState(session);
+  afterSessionCommit(() => {
+    for (const client of [...session.clients.values()]) {
+      if (client.role === "player" && client.playerId === player.id) {
+        removeSessionClient(session, client);
+        client.response.end();
+      }
+    }
+  });
+  return createSessionActionResult(session, "host", null, {
+    payload: { kicked: true, playerId: player.id }
   });
 }
 
@@ -2057,6 +2089,7 @@ function buildRecentPlayers(session) {
     .sort((left, right) => right.joinedAt - left.joinedAt)
     .slice(0, RECENT_PLAYER_LIMIT)
     .map((player) => ({
+      id: player.id,
       nickname: player.nickname,
       score: player.score
     }));
