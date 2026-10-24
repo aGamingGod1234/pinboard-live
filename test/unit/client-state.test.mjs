@@ -7,6 +7,7 @@ import {
   createClientId,
   createDraftSaveCoordinator,
   getPodiumRevealOrder,
+  mergeCompactAnswerState,
   removeQuizOption,
   reorderItemsById,
   selectAnswerAcknowledgement,
@@ -287,4 +288,21 @@ test("delayed live state cannot replace a newer session version", () => {
   assert.equal(shouldAcceptLiveState(current, { pin: "123456", version: 13 }), true);
   assert.equal(shouldAcceptLiveState(current, { pin: "654321", version: 1 }), true);
   assert.equal(shouldAcceptLiveState(null, { pin: "123456", version: 1 }), true);
+});
+
+test("compact answers cannot overwrite newer or unrelated live state", () => {
+  const current = { pin: "123456", currentQuestionIndex: 1, version: 12, selectedOptionIds: [], answerCount: 2 };
+  for (const answer of [
+    { pin: "123456", questionIndex: 0, version: 13, selectedOptionIds: ["old"] },
+    { pin: "654321", questionIndex: 1, version: 13, selectedOptionIds: ["other-game"] },
+    { pin: "123456", questionIndex: 1, version: 11, selectedOptionIds: ["stale"] }
+  ]) {
+    assert.equal(mergeCompactAnswerState(current, answer), current);
+  }
+  assert.equal(mergeCompactAnswerState(null, { version: 13 }), null);
+  const accepted = mergeCompactAnswerState(current, { pin: "123456", questionIndex: 1, version: 12, selectedOptionIds: ["chosen"], selectedOptionId: "chosen" });
+  assert.deepEqual(accepted.selectedOptionIds, ["chosen"]);
+  assert.equal(accepted.selectedOptionId, "chosen");
+  assert.equal(accepted.answerCount, 2);
+  assert.deepEqual(current.selectedOptionIds, []);
 });

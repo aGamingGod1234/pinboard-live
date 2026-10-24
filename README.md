@@ -6,11 +6,11 @@ Pinboard Live is a lightweight live quiz app with presenter controls, anonymous 
 
 **Singapore AI events:** [agaminggod.com/events](https://agaminggod.com/events)
 
-The events route is a sanitized read-only snapshot packaged from the separate `singapore-ai-events-dashboard` repository. Refresh research and canonical data remain local; this app exposes only fixed browser assets plus `/events/api/data`, `/events/api/receipts`, and `/events/api/health`. To package a newly validated local snapshot before a reviewed release, run `npm run sync:events`.
+The events route is a sanitized read-only snapshot packaged from the separate `singapore-ai-events-dashboard` repository. Refresh research and canonical data remain local; this app exposes only fixed browser assets plus `/events/api/data`, `/events/api/receipts`, and `/events/api/health`. To package a newly validated local snapshot before a reviewed release, build the dashboard in the sibling `singapore-ai-events-dashboard` checkout and run `npm run sync:events`. Set `EVENTS_DASHBOARD_ROOT` when that checkout lives elsewhere. Build or validation failures leave the existing public snapshot intact. A failed filesystem swap attempts rollback and retains a recovery backup if restoration also fails.
 
 ## Requirements
 
-- Node.js 22 is used in CI; the application supports Node.js 20 or newer.
+- Node.js 24 LTS is recommended (`.nvmrc`). Node.js 22 or newer is required; CI checks Node.js 22, 24, and 26. Node.js 20 is no longer supported upstream.
 - PostgreSQL is strongly recommended for production persistence. Local development can run with the in-memory fallback.
 
 ## Run locally
@@ -29,7 +29,7 @@ Open `http://localhost:4173`.
 
 The built-in development credentials (`presenter@pinboard.local` / `local-presenter-password`) are disabled by default. To use them for local development only, omit explicit presenter credentials and set `ALLOW_INSECURE_LOCAL_AUTH=true`. Never enable that flag in a shared or production environment.
 
-The server reads environment variables directly from the process. [`.env.example`](.env.example) is a reference; provide the values through PowerShell, your process manager, or Railway.
+The server reads environment variables directly from the process. [`.env.example`](.env.example) is a reference; provide the values through your shell, process manager, or Railway. Alternatively, copy it to `.env`, replace its authentication placeholders, and run `node --env-file=.env server.mjs` on any supported Node.js version. Plain `npm start` does not automatically load `.env`.
 
 ## Configuration
 
@@ -63,6 +63,7 @@ For Google sign-in, register `PUBLIC_ORIGIN` as an authorized origin and configu
 ## Persistence and live flow
 
 - The Node.js server is authoritative for session phases, deadlines, scoring, and idempotent answer submission.
+- **Play again** creates a fresh PIN from the ended session's original deck, including after presenter recovery. Removing a player revokes their current session and returns connected clients home; it does not prevent a new anonymous join with the game PIN.
 - Regular quizzes support 2–6 options and one or more correct answers through `correctOptionIds`. True/False remains fixed at two options with exactly one correct answer. Single-answer questions submit immediately; multi-answer questions require exactly the displayed selection count and an explicit submit.
 - Player submissions are persisted as `selectedOptionIds`. Awards decrease continuously in milliseconds from the question's configured points to zero at its effective deadline. A manual Skip uses the exact elapsed duration, and multi-answer awards multiply that time value by the fraction of correct choices selected; wrong and missing answers receive zero.
 - Live rounds progress through `question -> answering -> results -> leaderboard`. Presenter results contain the answer distribution and explicit correct markers without an embedded leaderboard. Players reconnect into the authoritative selection, waiting, reveal, or leaderboard state, including correct, partial, incorrect, timeout, and awarded-point details.
@@ -82,7 +83,7 @@ npm run check
 
 `npm test` runs unit and integration tests. `npm run check` runs the full test suite plus JavaScript syntax checks. CI also runs a production-dependency audit at the `high` severity threshold.
 
-CI provisions a disposable PostgreSQL 16 service and runs the two-replica concurrency suite, including stale presentation writes, a slow-body lock probe, duplicate and 20-player answer bursts, scoring/restart persistence, and cross-replica logout revocation. Local runs skip that single test unless `TEST_DATABASE_URL` points to a local database whose name contains `test`.
+CI provisions a disposable PostgreSQL 16 service for each supported runtime and runs the two-replica concurrency suite, including stale presentation writes, a slow-body lock probe, duplicate and 20-player answer bursts, scoring/restart persistence, and cross-replica logout revocation. Local runs skip that single test unless `TEST_DATABASE_URL` points to a local database whose name contains `test`.
 
 ## Responsible disclosure
 

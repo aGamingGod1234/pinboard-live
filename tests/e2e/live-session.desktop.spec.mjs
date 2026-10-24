@@ -357,7 +357,9 @@ test("@live presenter creates a quiz and completes a resumable two-context live 
     await expect(page.getByText("1 participant joined", { exact: true })).toBeVisible();
     await expect(page.locator(".participant-dock")).toBeVisible();
 
+    const originalStart = page.waitForResponse((response) => response.url().endsWith(`/api/sessions/${pin}/start`));
     await page.getByRole("button", { name: "Start", exact: true }).click();
+    const originalQuestion = (await (await originalStart).json()).session.currentQuestion;
     await expect(page.locator(".answer-progress").first()).toHaveAttribute("aria-label", "0 of 0 answers");
     const presenterImage = page.locator(".presenter-media-display .media-preview");
     await expect(presenterImage).toBeVisible();
@@ -455,6 +457,16 @@ test("@live presenter creates a quiz and completes a resumable two-context live 
     await expect(replayPinBlock).toBeVisible();
     const replayPin = (await replayPinBlock.textContent()).replace(/\D/g, "");
     expect(replayPin).not.toBe(pin);
+    const replayStart = page.waitForResponse((response) => response.url().endsWith(`/api/sessions/${replayPin}/start`));
+    await page.getByRole("button", { name: "Start", exact: true }).click();
+    const replaySession = (await (await replayStart).json()).session;
+    expect(replaySession.title).toBe("E2E live quiz");
+    expect(replaySession.questionCount).toBe(2);
+    const withoutMediaPin = (question) => ({
+      ...question,
+      media: question.media ? { ...question.media, url: question.media.url.split("?")[0] } : null
+    });
+    expect(withoutMediaPin(replaySession.currentQuestion)).toEqual(withoutMediaPin(originalQuestion));
 
     page.once("dialog", async (dialog) => dialog.accept());
     await page.getByRole("button", { name: "End", exact: true }).click();
