@@ -439,3 +439,21 @@ function getCurrentQuestionId(state) {
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
 }
+
+export function mergeCompactAnswerState(currentState, answer) {
+  if (!currentState || (answer.pin && answer.pin !== currentState.pin)
+    || (Number.isSafeInteger(answer.questionIndex) && answer.questionIndex !== currentState.currentQuestionIndex)
+    || Number(answer.version) < Number(currentState.version)) {
+    return currentState;
+  }
+  return {
+    ...currentState,
+    version: Math.max(Number(currentState.version) || 0, Number(answer.version) || 0),
+    answerCount: Number.isSafeInteger(answer.answerCount) ? answer.answerCount : currentState.answerCount,
+    answerCounts: answer.answerCounts && typeof answer.answerCounts === "object"
+      ? { ...currentState.answerCounts, ...answer.answerCounts }
+      : currentState.answerCounts,
+    selectedOptionIds: Array.isArray(answer.selectedOptionIds) ? answer.selectedOptionIds : currentState.selectedOptionIds,
+    selectedOptionId: typeof answer.selectedOptionId === "string" ? answer.selectedOptionId : currentState.selectedOptionId
+  };
+}

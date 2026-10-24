@@ -5,6 +5,7 @@ import {
   createDraftSaveCoordinator,
   getPodiumRevealOrder,
   isValidLiveTimer,
+  mergeCompactAnswerState,
   removeQuizOption,
   reorderItemsById,
   selectAnswerAcknowledgement,
@@ -2122,7 +2123,7 @@ async function hostKick(playerId) {
     return;
   }
 
-  if (!window.confirm("Kick this player? They will be returned to the home page and cannot rejoin this game.")) {
+  if (!window.confirm("Remove this player? They will return to the home page. They can join again with the game PIN.")) {
     return;
   }
 
@@ -2134,13 +2135,11 @@ async function hostKick(playerId) {
 }
 
 async function playAgain() {
-  if (state.eventSource) {
-    state.eventSource.close();
-    state.eventSource = null;
-  }
-  state.session = null;
-  state.remote = null;
-  await createSession();
+  const response = await postJson("/api/sessions", { replayPin: state.remote?.pin }, true);
+  state.session = response.session;
+  applyRemoteState(response.session);
+  connectEvents(response.pin, "host");
+  render();
 }
 
 async function leavePlayerSession() {
@@ -2215,13 +2214,18 @@ function renderPresenterResults(remote) {
 }
 
 async function submitAnswer(selectedOptionIds) {
-  if (!state.remote?.pin || !state.playerId) {
+  if (!state.remote?.pin || !state.playerId || !state.remote.currentQuestion) {
     throw new Error("Join a session before answering.");
   }
-  const response = await postJson(`/api/sessions/${state.remote.pin}/answer`, {
-    selectedOptionIds
-  });
-  if (state.remote.currentQuestion?.id) state.pendingSelections.delete(state.remote.currentQuestion.id);
+  const { pin, currentQuestionIndex, currentQuestion } = state.remote;
+  const playerId = state.playerId;
+  const response = await postJson(`/api/sessions/${pin}/answer`, { selectedOptionIds });
+  if (state.remote?.pin !== pin || state.playerId !== playerId
+    || state.remote.currentQuestionIndex !== currentQuestionIndex
+    || state.remote.currentQuestion?.id !== currentQuestion.id) {
+    return;
+  }
+  state.pendingSelections.delete(currentQuestion.id);
   if (response.session) {
     applyRemoteState(response.session);
   } else {
@@ -2317,7 +2321,7 @@ function connectEvents(pin, role) {
       return leavePresentationWithNotice("The presenter has left the presentation.");
     }
     if (role === "player" && nextState.endedReason === "kicked") {
-      return leavePresentationWithNotice("The presenter removed you from this game.");
+      return leavePresentationWithNotice("You are no longer in this game.");
     }
 
     const previousState = state.remote;
@@ -2421,23 +2425,7 @@ function updateFromInput(target) {
 }
 
 function applyCompactAnswerState(answer) {
-  if (!state.remote || answer.pin && answer.pin !== state.remote.pin) {
-    return;
-  }
-  state.remote = {
-    ...state.remote,
-    version: Math.max(Number(state.remote.version) || 0, Number(answer.version) || 0),
-    answerCount: Number.isSafeInteger(answer.answerCount) ? answer.answerCount : state.remote.answerCount,
-    answerCounts: answer.answerCounts && typeof answer.answerCounts === "object"
-      ? { ...state.remote.answerCounts, ...answer.answerCounts }
-      : state.remote.answerCounts,
-    selectedOptionIds: Array.isArray(answer.selectedOptionIds)
-      ? answer.selectedOptionIds
-      : state.remote.selectedOptionIds,
-    selectedOptionId: typeof answer.selectedOptionId === "string"
-      ? answer.selectedOptionId
-      : state.remote.selectedOptionId
-  };
+  state.remote = mergeCompactAnswerState(state.remote, answer);
 }
 
 function applyRemoteState(nextState) {
@@ -2926,6 +2914,9 @@ function leavePresentationWithNotice(message) {
     state.eventSource = null;
   }
 
+  localStorage.removeItem(STORAGE_KEYS.playerPin);
+  state.playerPin = "";
+  state.pendingSelections.clear();
   state.playerId = "";
   state.remote = null;
   state.restoreKey = "";

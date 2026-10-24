@@ -103,6 +103,7 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
     JSON.stringify(answer.selectedOptionIds) === JSON.stringify([correctOptionId, secondCorrectOptionId])
   )));
   assert.ok(answers.every((answer) => Number.isSafeInteger(answer.version)));
+  assert.ok(answers.every((answer) => answer.pin === pin && answer.questionIndex === 0));
   const answeredVersion = Math.max(...answers.map((answer) => answer.version));
   assert.ok(answeredVersion >= started.session.version);
 
@@ -114,6 +115,7 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
     }, { Origin: target.baseUrl });
     assert.equal(response.status, 201);
     additionalPlayers.push({
+      playerId: (await response.json()).playerId,
       baseUrl: target.baseUrl,
       cookie: cookiePair(response.headers.get("set-cookie") ?? "")
     });
@@ -137,6 +139,22 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
   const scoredPlayer = revealed.session.leaderboard.find((player) => player.nickname === PLAYER_NICKNAME);
   assert.ok(scoredPlayer);
   assert.ok(scoredPlayer.score > 0);
+
+  const removedPlayer = additionalPlayers[0];
+  const removedStream = await fetch(`${secondServer.baseUrl}/events?pin=${pin}&role=player`, {
+    headers: { Cookie: removedPlayer.cookie }, signal: AbortSignal.timeout(5_000)
+  });
+  assert.equal(removedStream.status, 200);
+  const kickResponse = await postJson(firstServer.baseUrl, `/api/sessions/${pin}/kick`, {
+    playerId: removedPlayer.playerId
+  }, presenterMutationHeaders(firstServer.baseUrl, presenter));
+  assert.equal(kickResponse.status, 200);
+  const removedEvents = await removedStream.text();
+  assert.match(removedEvents, /"endedReason":"kicked"/);
+  const removedResume = await postJson(secondServer.baseUrl, `/api/sessions/${pin}/resume`, {}, {
+    Cookie: removedPlayer.cookie, Origin: secondServer.baseUrl
+  });
+  assert.equal(removedResume.status, 401);
 
   const logoutResponse = await postJson(firstServer.baseUrl, "/api/logout", {},
     presenterMutationHeaders(firstServer.baseUrl, presenter));
@@ -163,6 +181,19 @@ test("PostgreSQL serializes cross-instance answers and restores scored state aft
   assert.deepEqual(resumed.session.selectedOptionIds, [correctOptionId, secondCorrectOptionId]);
   assert.equal(resumed.session.me.score, scoredPlayer.score);
   assert.ok(resumed.session.version >= revealed.session.version);
+
+  const recoveredPresenter = await loginPresenter(restartedServer.baseUrl);
+  const recoveredHeaders = presenterMutationHeaders(restartedServer.baseUrl, recoveredPresenter);
+  const endResponse = await postJson(restartedServer.baseUrl, `/api/sessions/${pin}/end`, { discardActiveRound: true }, recoveredHeaders);
+  assert.equal(endResponse.status, 200);
+  const replayResponse = await postJson(restartedServer.baseUrl, "/api/sessions", { replayPin: pin }, recoveredHeaders);
+  assert.equal(replayResponse.status, 201);
+  const replay = await replayResponse.json();
+  assert.notEqual(replay.pin, pin);
+  assert.equal(replay.session.playerCount, 0);
+  const replayStart = await postJson(restartedServer.baseUrl, `/api/sessions/${replay.pin}/start`, {}, recoveredHeaders);
+  assert.equal(replayStart.status, 200);
+  assert.deepEqual((await replayStart.json()).session.currentQuestion, started.session.currentQuestion);
 });
 
 function assertDisposableTestDatabase(connectionString) {

@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, rm, mkdtemp, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,78 +22,108 @@ if (
   throw new Error("Refusing to package an invalid or empty events dataset.");
 }
 
-await rm(publicRoot, { recursive: true, force: true });
-await mkdir(join(publicRoot, "api"), { recursive: true });
-await cp(join(sourceDist, "client"), join(publicRoot, "client"), {
-  recursive: true,
-});
-await cp(join(sourceDist, "domain"), join(publicRoot, "domain"), {
-  recursive: true,
-});
+await mkdir(dirname(publicRoot), { recursive: true });
+const stagingRoot = await mkdtemp(join(dirname(publicRoot), ".events-build-"));
+const stagedRoot = join(stagingRoot, "next");
+const previousRoot = join(stagingRoot, "previous");
+let preserveBackup = false;
+try {
+  await mkdir(join(stagedRoot, "api"), { recursive: true });
+  await cp(join(sourceDist, "client"), join(stagedRoot, "client"), {
+    recursive: true,
+  });
+  await cp(join(sourceDist, "domain"), join(stagedRoot, "domain"), {
+    recursive: true,
+  });
 
-const sourceIndex = await readFile(
-  join(sourceDist, "client", "index.html"),
-  "utf8",
-);
-const publicIndex = sourceIndex
-  .replace('data-base-path=""', 'data-base-path="/events"')
-  .replace('data-public-mode="false"', 'data-public-mode="true"')
-  .replace('href="/client/styles.css"', 'href="/events/client/styles.css"')
-  .replace('src="/client/main.js"', 'src="/events/client/main.js"');
-if (
-  !publicIndex.includes('data-base-path="/events"') ||
-  !publicIndex.includes('data-public-mode="true"')
-) {
-  throw new Error("Public dashboard index transformation did not apply.");
-}
-await writeFile(join(publicRoot, "index.html"), publicIndex, "utf8");
+  const sourceIndex = await readFile(
+    join(sourceDist, "client", "index.html"),
+    "utf8",
+  );
+  const publicIndex = sourceIndex
+    .replace('data-base-path=""', 'data-base-path="/events"')
+    .replace('data-public-mode="false"', 'data-public-mode="true"')
+    .replace('href="/client/styles.css"', 'href="/events/client/styles.css"')
+    .replace('src="/client/main.js"', 'src="/events/client/main.js"');
+  if (
+    !publicIndex.includes('data-base-path="/events"') ||
+    !publicIndex.includes('data-public-mode="true"')
+  ) {
+    throw new Error("Public dashboard index transformation did not apply.");
+  }
+  await writeFile(join(stagedRoot, "index.html"), publicIndex, "utf8");
 
-const servedAt = new Date().toISOString();
-await writeJson(join(publicRoot, "api", "data.json"), {
-  dataset,
-  overlaps: detectOverlaps(dataset.events),
-  servedAt,
-});
-await writeJson(join(publicRoot, "api", "health.json"), {
-  ok: true,
-  eventCount: dataset.events.length,
-  sourceCount: dataset.sourceCount,
-  generatedAt: dataset.generatedAt,
-});
+  const servedAt = new Date().toISOString();
+  await writeJson(join(stagedRoot, "api", "data.json"), {
+    dataset,
+    overlaps: detectOverlaps(dataset.events),
+    servedAt,
+  });
+  await writeJson(join(stagedRoot, "api", "health.json"), {
+    ok: true,
+    eventCount: dataset.events.length,
+    sourceCount: dataset.sourceCount,
+    generatedAt: dataset.generatedAt,
+  });
 
-const receiptFiles = (await readdir(receiptsPath))
-  .filter((name) => name.endsWith(".json"))
-  .sort()
-  .reverse();
-const latestReceipt = receiptFiles[0]
-  ? JSON.parse(await readFile(join(receiptsPath, receiptFiles[0]), "utf8"))
-  : null;
-const publicReceipts = latestReceipt
-  ? [
-      {
-        schemaVersion: 1,
-        runId: `public-${latestReceipt.runId}`,
-        startedAt: latestReceipt.startedAt,
-        finishedAt: latestReceipt.finishedAt,
-        status: latestReceipt.status,
-        mode: latestReceipt.mode,
-        threadId: "withheld",
-        candidatePath: "withheld",
-        canonicalPath: "withheld",
-        receiptPath: "withheld",
-        counts: latestReceipt.counts,
-        validation: {
-          ok: latestReceipt.validation?.ok === true,
-          errors: [],
+  const receiptFiles = (await readdir(receiptsPath))
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .reverse();
+  const latestReceipt = receiptFiles[0]
+    ? JSON.parse(await readFile(join(receiptsPath, receiptFiles[0]), "utf8"))
+    : null;
+  const publicReceipts = latestReceipt
+    ? [
+        {
+          schemaVersion: 1,
+          runId: `public-${latestReceipt.runId}`,
+          startedAt: latestReceipt.startedAt,
+          finishedAt: latestReceipt.finishedAt,
+          status: latestReceipt.status,
+          mode: latestReceipt.mode,
+          threadId: "withheld",
+          candidatePath: "withheld",
+          canonicalPath: "withheld",
+          receiptPath: "withheld",
+          counts: latestReceipt.counts,
+          validation: {
+            ok: latestReceipt.validation?.ok === true,
+            errors: [],
+          },
+          sourcePolicy: "public-official-or-organizer-only",
+          error: null,
         },
-        sourcePolicy: "public-official-or-organizer-only",
-        error: null,
-      },
-    ]
-  : [];
-await writeJson(join(publicRoot, "api", "receipts.json"), {
-  receipts: publicReceipts,
-});
+      ]
+    : [];
+  await writeJson(join(stagedRoot, "api", "receipts.json"), {
+    receipts: publicReceipts,
+  });
+
+  let hadPrevious = false;
+  try {
+    await rename(publicRoot, previousRoot);
+    hadPrevious = true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  try {
+    await rename(stagedRoot, publicRoot);
+  } catch (error) {
+    if (hadPrevious) {
+      try {
+        await rename(previousRoot, publicRoot);
+      } catch (rollbackError) {
+        // Keep the original snapshot recoverable if the filesystem prevents rollback.
+        preserveBackup = true;
+        throw new AggregateError([error, rollbackError], `Could not restore snapshot; backup retained at ${previousRoot}`);
+      }
+    }
+    throw error;
+  }
+} finally {
+  if (!preserveBackup) await rm(stagingRoot, { recursive: true, force: true });
+}
 
 process.stdout.write(
   `Packaged AI Events SG with ${dataset.events.length} events for /events/.\n`,

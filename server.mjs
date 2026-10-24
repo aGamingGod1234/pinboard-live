@@ -837,8 +837,17 @@ async function handleDuplicatePresentation(request, response, presentationId) {
 async function handleCreateSession(request, response) {
   const presenter = await requireCurrentPresenter(request, { requireCsrf: true });
   const body = await readJson(request);
-  const title = limitText(readString(body.title, "Deck title"), MAX_TITLE_LENGTH, "Deck title");
-  const questions = normalizeQuestions(body.questions);
+  let snapshot = body;
+  if (Object.hasOwn(body, "replayPin")) {
+    const original = await getSession(normalizePin(body.replayPin));
+    assertSessionHostPresenter(presenter, original);
+    if (original.phase !== "ended") {
+      throw new HttpError(409, "End the original session before playing again.", "SESSION_NOT_ENDED");
+    }
+    snapshot = { title: original.title, questions: structuredClone(original.questions) };
+  }
+  const title = limitText(readString(snapshot.title, "Deck title"), MAX_TITLE_LENGTH, "Deck title");
+  const questions = normalizeQuestions(snapshot.questions);
   await assertPresenterOwnsMedia(presenter.id, questions);
   const pin = await createUniquePin();
 
@@ -1216,6 +1225,8 @@ async function handleConcurrentDatabaseAnswer(pin, body, playerTokenHash) {
     return {
       fallback: false,
       payload: {
+        pin,
+        questionIndex,
         accepted,
         duplicate: !accepted,
         selectedOptionIds: persistedSelectedOptionIds,
@@ -1303,8 +1314,7 @@ async function handleKick(body, session) {
   afterSessionCommit(() => {
     for (const client of [...session.clients.values()]) {
       if (client.role === "player" && client.playerId === player.id) {
-        removeSessionClient(session, client);
-        client.response.end();
+        closeRevokedPlayerClient(session, client);
       }
     }
   });
@@ -1676,9 +1686,13 @@ function pruneRevokedPlayerClients(session) {
     if (player?.resumeTokenHash && player.resumeTokenHash === client.playerTokenHash) {
       continue;
     }
-    removeSessionClient(session, client);
-    client.response.end();
+    closeRevokedPlayerClient(session, client);
   }
+}
+
+function closeRevokedPlayerClient(session, client) {
+  removeSessionClient(session, client);
+  client.response.end(`event: state\ndata: ${JSON.stringify({ pin: session.pin, endedReason: "kicked" })}\n\n`);
 }
 
 function revokePresenterStreams(tokenHash) {

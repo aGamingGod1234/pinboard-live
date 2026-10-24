@@ -9,20 +9,20 @@
     "sync:events": "node scripts/sync-events-dashboard.mjs",
     "generate:game-audio": "node scripts/generate-game-audio.mjs",
     "test": "npm run test:unit && npm run test:integration",
-    "test:unit": "node --test test/unit/*.test.mjs",
-    "test:integration": "node --test test/integration/*.test.mjs",
+    "test:unit": "node --test --test-concurrency=1 test/unit/*.test.mjs",
+    "test:integration": "node --test --test-concurrency=1 test/integration/*.test.mjs",
     "test:e2e": "playwright test",
     "test:live": "playwright test --grep @live",
     "check": "npm run test && node --check server.mjs && node --check public/app.js && node --check public/client-state.js && node --check scripts/sync-events-dashboard.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
-    "pg": "^8.22.0",
+    "pg": "^8.23.1",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1"
+    "@playwright/test": "^1.64.1"
   }
 }

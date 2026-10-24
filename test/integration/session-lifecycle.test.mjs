@@ -285,6 +285,74 @@ test("authenticated presenter can recover the latest active hosted session", asy
   assert.deepEqual(await emptyResponse.json(), { pin: null, session: null });
 });
 
+test("replay creates a fresh session from the entire original deck", async () => {
+  const presenter = await loginPresenter();
+  const headers = presenterMutationHeaders(presenter);
+  const questions = [0, 1].map((index) => {
+    const options = [0, 1, 2].map((option) => ({ id: randomUUID(), text: `Choice ${index}-${option}` }));
+    return { id: randomUUID(), kind: "quiz", text: `Original question ${index}`, points: 1234 + index,
+      timerSeconds: 45 + index, options, correctOptionIds: options.slice(0, 2).map((option) => option.id), media: null };
+  });
+  const original = await postJson("/api/sessions", { title: "Original deck", questions }, headers);
+  assert.equal(original.status, 201);
+  const { pin } = await original.json();
+  const activeReplay = await postJson("/api/sessions", { replayPin: pin }, headers);
+  assert.equal(activeReplay.status, 409);
+  assert.equal((await postJson(`/api/sessions/${pin}/end`, { discardActiveRound: true }, headers)).status, 200);
+  assert.equal((await postJson("/api/sessions", { replayPin: pin }, { Origin: baseUrl })).status, 401);
+  const response = await postJson("/api/sessions", { replayPin: pin }, headers);
+  assert.equal(response.status, 201);
+  const replay = await response.json();
+  assert.notEqual(replay.pin, pin);
+  assert.equal(replay.session.title, "Original deck");
+  assert.equal(replay.session.questionCount, 2);
+  assert.equal(replay.session.playerCount, 0);
+  assert.deepEqual(replay.session.leaderboard, []);
+  const started = await postJson(`/api/sessions/${replay.pin}/start`, {}, headers);
+  assert.deepEqual((await started.json()).session.currentQuestion, questions[0]);
+  for (const action of ["reveal", "next", "next"]) {
+    const result = await postJson(`/api/sessions/${replay.pin}/${action}`, {}, headers);
+    assert.equal(result.status, 200);
+    if (action === "next") {
+      const state = (await result.json()).session;
+      if (state.currentQuestionIndex === 1) assert.deepEqual(state.currentQuestion, questions[1]);
+    }
+  }
+  const replayState = await openEventStream(`${baseUrl}/events?pin=${replay.pin}&role=host`, presenter.cookie);
+  assert.deepEqual(replayState.state.currentQuestion, questions[1]);
+  await closeEventStream(replayState);
+  assert.equal((await postJson(`/api/sessions/${replay.pin}/end`, { discardActiveRound: true }, headers)).status, 200);
+});
+
+test("kicking a player delivers a removal event before closing their stream", async (context) => {
+  const presenter = await loginPresenter();
+  const headers = presenterMutationHeaders(presenter);
+  const original = await postJson("/api/sessions", { title: "Removal", questions: [{
+    id: randomUUID(), kind: "slide", text: "Welcome", points: 0, timerSeconds: 0,
+    options: [], correctOptionIds: [], media: null
+  }] }, headers);
+  const { pin } = await original.json();
+  const joined = await postJson(`/api/sessions/${pin}/join`, { nickname: "Removed player" }, { Origin: baseUrl });
+  const { playerId } = await joined.json();
+  const cookie = cookiePair(joined.headers.get("set-cookie"));
+  const stream = await openEventStream(`${baseUrl}/events?pin=${pin}&role=player`, cookie);
+  context.after(() => closeEventStream(stream));
+  const kicked = await postJson(`/api/sessions/${pin}/kick`, { playerId }, headers);
+  assert.equal(kicked.status, 200);
+  let remainingEvents = "";
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await readWithTimeout(stream.reader);
+    if (done) break;
+    remainingEvents += decoder.decode(value, { stream: true });
+  }
+  stream.closed = true;
+  assert.match(remainingEvents, /"endedReason":"kicked"/);
+  const resume = await postJson(`/api/sessions/${pin}/resume`, {}, { Cookie: cookie, Origin: baseUrl });
+  assert.equal(resume.status, 401);
+  assert.equal((await postJson(`/api/sessions/${pin}/end`, { discardActiveRound: true }, headers)).status, 200);
+});
+
 test("presentation saves reject a stale revision", async () => {
   const presenter = await loginPresenter();
   const createResponse = await postJson("/api/presentations", {}, presenterMutationHeaders(presenter));
